@@ -29,12 +29,13 @@ If browser PDF generation is unavailable, open the generated HTML in Chrome or E
 | `SHELTER_TIED` | Set `yes` only when reactions are transferred to a parent structure. Tie reactions are X/Z only. |
 | `ROOF_LIVE_LOAD_KN_M2` | Roof live load intensity, default template value `0.4 kN/m2` per BS EN 1991-1-1 Clause 6.3.4.1. |
 | `SEAT_LIVE_LOAD_KN_M` | Seat ledger UDL, default template value `0.75 kN/m`. |
-| `PLATFORM_LIVE_LOAD_KN_M2` | Main working platform live load, default template value `1.5 kN/m2`. |
-| `WIND_QP_KN_M2`, `WIND_FORCE_COEFFICIENT` | Used to calculate shelter wind pressure `qw = qp x Cf`. |
-| `WIND_PRESSURE_KN_M2` | Optional direct override for `qw`; leave blank to calculate from `qp x Cf`. |
+| `PLATFORM_LIVE_LOAD_KN_M2` | Main walking platform live load, default template value `1.5 kN/m2`. |
 | `UPLIFT_TOTAL_WLY_KN`, `UPLIFT_DEAD_LOAD_KN` | Optional uplift overrides; leave blank to read WLY and DL totals from STAAD output. |
 | `UPLIFT_ANCHORAGE_POINTS`, `CONCRETE_BLOCK_*` | Inputs for concrete-block counterweight count. |
-| `ROOF_LIVE_MEMBERS`, `SEAT_LIVE_MEMBERS`, `PLATFORM_LIVE_MEMBERS` | Optional STAAD member overrides when automatic classification needs help. |
+
+Roof, seat, and platform members are classified automatically from STAAD member elevations and UDLs -
+there is no manual member-list override. Shelter wind pressure `qw = qp x Cf` is generated entirely from
+the EN 1991-1-4:2005 calculation (using the shelter height as `z`) - there is no `project_info.txt` override.
 
 ## STAAD Values Parsed
 
@@ -45,7 +46,7 @@ If browser PDF generation is unavailable, open the generated HTML in Chrome or E
 | Roof live load | `.std` + `project_info.txt` | Top shelter member groups; `ROOF_LIVE_LOAD_KN_M2 x tributary width` |
 | Seat live load | `.std` + `project_info.txt` | Seat ledger member groups; `SEAT_LIVE_LOAD_KN_M` |
 | Main platform live load | `.std` + `project_info.txt` | Platform member groups; `PLATFORM_LIVE_LOAD_KN_M2 x tributary width` |
-| Wind ledger loads | `.std` + `project_info.txt` | `qw x tributary ledger height`, where `qw = qp x Cf` |
+| Wind ledger loads | `.std` (wind calc auto) | `qw x tributary width`, where `qw = qp x Cf` and `qp` is calculated for `z` = shelter height |
 | Wind uplift | `.std` / `.out` | WLY load case total from SUMMATION FORCE-Y |
 | Uplift resistance | `.out` + `project_info.txt` | `max(WLY - DL, 0)`, split over anchorage points and concrete block weight |
 | Frictional resistance | `.std` | KFX/KFZ spring stiffness, always reported for shelter |

@@ -35,19 +35,12 @@ RISK_LEVEL:          Medium
 ROOF_LIVE_LOAD_KN_M2:      0.4
 # Seat load is a UDL applied to the seat ledgers.
 SEAT_LIVE_LOAD_KN_M:       0.75
-# Main working platform live load.
+# Main walking platform live load.
 PLATFORM_LIVE_LOAD_KN_M2:  1.5
 
 # Legacy scaffold SWL override. Leave blank for shelter reports unless a fallback is needed.
 LOAD_INTENSITY_KN_M2:
 CATEGORY_1_ASSURANCE_NOTE: yes
-
-# Wind pressure inputs
-# If WIND_PRESSURE_KN_M2 is blank, the report calculates qw = WIND_QP_KN_M2 x WIND_FORCE_COEFFICIENT.
-# Example: 1.2 x 1.02627837 = 1.232 kN/m2.
-WIND_QP_KN_M2:             1.2
-WIND_FORCE_COEFFICIENT:    1.02627837
-WIND_PRESSURE_KN_M2:
 
 # Uplift resistance / counterweight inputs
 UPLIFT_RESISTANCE_ENABLED: yes
@@ -60,19 +53,12 @@ CONCRETE_BLOCK_WIDTH_M:    0.4
 CONCRETE_BLOCK_HEIGHT_M:   0.3
 CONCRETE_UNIT_WEIGHT_KN_M3: 24
 
-# Optional member-classification overrides.
-# Leave blank to classify roof/seat/platform from STAAD member elevations and UDLs.
-ROOF_LIVE_MEMBERS:
-SEAT_LIVE_MEMBERS:
-PLATFORM_LIVE_MEMBERS:
-
 # Reaction on Parent Structure (ties).
 # Shelter parent-structure reactions are reported only when SHELTER_TIED is yes.
 SHOW_TIE_REACTIONS: no
 TIE_DISPLAY:         sum
 TIE_FORCE_FX:
 TIE_FORCE_FZ:
-TIE_FORCE_FY:
 
 PERMIT_NO:
 ERMT_NO:             PIC/PMS/26/2714
@@ -91,8 +77,6 @@ CHECKED_BY_NAME:     Omikunle, Akinwale
 PREPARED_BY_NAME:
 
 # Job details
-EQUIPMENT_NAME: condensate loading arm
-EQUIPMENT_TAG: Z-3301A,Z-3301B,Z-3301C
 WORK_ORDER:
 PURPOSE:             maintenance
 STRUCTURE_ABOVE_GROUND_M:

@@ -377,14 +377,18 @@ tr:nth-child(even) td { background: var(--bg-row); }
   {% set sections = [
     ('load-summary',       'Reaction on Parent Structure (Ties)') if (show_tie_reactions and structural.support_reactions.tie_joints) else ('', ''),
     ('general-note',       'General Note, Material Properties &amp; Modelling Philosophy'),
+    ('load-combs',         'Load Combinations'),
     ('load-cases',         'Load Cases'),
     ('wind-calc',          'Wind Load Calculation (EN 1991-1-4:2005)'),
-    ('uplift-resistance',  'Uplift Resistance / Counterweight') if (structural.shelter.is_shelter and structural.shelter.uplift.enabled) else ('', ''),
-    ('load-combs',         'Load Combinations'),
+    ('uplift-resistance',  'Uplift Resistance / Counterweight Calculation') if (structural.shelter.is_shelter and structural.shelter.uplift.enabled) else ('', ''),
+    ('load-diagrams',      'Load Diagrams'),
+    ('counterweight-check', 'Counterweight Stability Check (EQU — EN 1990)') if counterweight.enabled else ('', ''),
     ('uc-summary',         'Static Check - Utilization Ratio Summary'),
     ('connection-check',   'Scaffold Tubes Connection Stability Check'),
     ('deflection-check',   'Deflection Check Results'),
     ('conclusion',         'Conclusion, Recommendations &amp; Installation Notes'),
+    ('app-e',              'Appendix E - Counterweight Design Calculation (A&#x2013;Z)') if counterweight.enabled else ('', ''),
+    ('references-standards', 'References &amp; Standards'),
   ] %}
   {% for anchor, title in sections %}
   {% if anchor %}
@@ -393,20 +397,6 @@ tr:nth-child(even) td { background: var(--bg-row); }
   </div>
   {% endif %}
   {% endfor %}
-  {% if counterweight.enabled %}
-  <div class="toc-entry">
-    <a href="#counterweight-check">Counterweight Stability Check (EQU — EN 1990)</a>
-  </div>
-  {% endif %}
-
-  {% if counterweight.enabled %}
-  <div class="toc-entry">
-    <a href="#app-e">Appendix E - Counterweight Design Calculation (A&#x2013;Z)</a>
-  </div>
-  {% endif %}
-  <div class="toc-entry">
-    <a href="#references-standards">References &amp; Standards</a>
-  </div>
   {% if engineering_drawings %}
   <div class="toc-section" style="margin-top:14px;">ENGINEERING DRAWINGS</div>
   {% for drawing in engineering_drawings %}
@@ -468,7 +458,50 @@ tr:nth-child(even) td { background: var(--bg-row); }
 
 
 {# ==========================================================
-   SHEET 2 - LOAD CASES
+   SHEET 2 - LOAD COMBINATIONS
+   ========================================================== #}
+<div class="page-calc" id="load-combs">
+<div class="section-hdr">LOAD COMBINATIONS</div>
+<div class="callout" style="margin-bottom:8px;">
+  <table style="border:none; font-size:8.5pt;">
+    <tr>
+      <td style="border:none; width:155px; font-weight:bold; color:var(--navy-mid); vertical-align:top;">BS EN 12811-1, 6.2.9.2</td>
+      <td style="border:none; line-height:1.7;">
+        Load combinations in accordance with BS EN 12811-1:2003.
+        ULS combinations use gamma = <strong>1.5</strong>; SLS (characteristic) combinations use gamma = <strong>1.0</strong>.<br/>
+        <strong>DL</strong> = Dead Load &nbsp;|&nbsp;
+        <strong>LL</strong> = {% if structural.shelter.is_shelter %}Shelter live load (platform, roof, seat){% else %}Platform Live Load{% endif %}
+        {% if structural.handrail_loads.has_x or structural.handrail_loads.has_z %}&nbsp;|&nbsp;
+        <strong>HLX/HLZ</strong> = Handrail X/Z{% endif %} &nbsp;|&nbsp;
+        <strong>WLX/WLZ{% if structural.shelter.is_shelter %}/WLY{% endif %}</strong> = Wind X/Z{% if structural.shelter.is_shelter %}/uplift Y{% endif %}
+        {% if counterweight.enabled %}&nbsp;|&nbsp;
+        <strong>CW</strong> = Counterweight (LC {{ counterweight.counterweight_load_case }}, LOADTYPE Dead;
+        &#947;<sub>stb</sub>&nbsp;=&nbsp;{{ counterweight.governing_cw_factor }} in ULS &nbsp;|&nbsp;
+        1.0 in SLS){% endif %}
+      </td>
+    </tr>
+  </table>
+</div>
+
+<table style="font-size:8.5pt;">
+  <thead>
+    <tr><th style="width:8%;">LC No.</th><th style="width:52%;">Combination</th><th style="width:40%;">Component Loadings &amp; Factors</th></tr>
+  </thead>
+  <tbody>
+    {% for c in structural.load_combinations %}
+    <tr>
+      <td style="text-align:center; font-weight:bold; color:var(--navy);">{{ c.number }}</td>
+      <td style="font-weight:bold;">{{ c.title }}</td>
+      <td style="font-size:8pt;">{% for lid, fac in c.factors %}LC{{ lid }} x {{ fac }}{% if not loop.last %} + {% endif %}{% endfor %}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+</div>
+
+
+{# ==========================================================
+   SHEET 2b - LOAD CASES
    ========================================================== #}
 <div class="page-calc" id="load-cases">
 <div class="section-hdr">LOAD CASES</div>
@@ -491,8 +524,9 @@ tr:nth-child(even) td { background: var(--bg-row); }
   <tr>
     <td style="border:none; width:155px; font-weight:bold; color:var(--navy-mid); font-size:8.5pt; vertical-align:top; padding:2px 8px 2px 0;">BS EN 1991-1-1, Cl. 6.3.4.1</td>
     <td style="border:none; line-height:1.7;">
-      Shelter live loading is separated into roof live load, seat ledger live load, and main working-platform live load.
-      Input intensities are read from <strong>project_info.txt</strong> and the applied member UDLs are read from the STAAD live-load case
+      Shelter live loading is separated into roof live load, seat ledger live load, and main walking-platform live load,
+      applied as member UDLs in the STAAD model. Each load intensity is multiplied by the tributary width of the
+      supporting member to obtain the applied member line load
       {% if structural.loads.platform_live_cases %}(LC {{ structural.loads.platform_live_cases | join(', ') }}){% endif %}.
     </td>
   </tr>
@@ -505,86 +539,87 @@ tr:nth-child(even) td { background: var(--bg-row); }
 </div>
 
 {% if live.platform_rows %}
-<div style="font-size:8.8pt; font-weight:bold; color:var(--navy); margin:10px 0 3px 0; border-bottom:1.2px solid var(--navy-mid); padding-bottom:2px;">Main Working Platform Live Load</div>
-<table style="font-size:8.1pt; margin:4px 0;">
+<div style="font-size:8.8pt; font-weight:bold; color:var(--navy); margin:10px 0 3px 0; border-bottom:1.2px solid var(--navy-mid); padding-bottom:2px;">Main Walking Platform Live Load</div>
+<table style="font-size:8.4pt; margin:4px 0;">
   <thead>
     <tr>
-      <th style="width:34%;">STAAD Members</th>
-      <th style="width:13%;">Elevation (m)</th>
-      <th style="width:16%;">Tributary Width (m)</th>
-      <th style="width:17%;">Load Intensity (kN/m&sup2;)</th>
-      <th style="width:20%; background:var(--gold); color:var(--navy);">Member Load (kN/m)</th>
+      <th style="width:30%;">Member</th>
+      <th>Tributary Width (m)</th>
+      <th style="width:18%;">Load Intensity (kN/m&sup2;)</th>
+      <th style="width:18%; background:var(--gold); color:var(--navy);">Member Load (kN/m)</th>
     </tr>
   </thead>
   <tbody>
     {% for row in live.platform_rows %}
+    {% set live_row_bg = '#EAF6EA' if row.member_role == 'Interior' else '#DDEBF3' %}
     <tr>
-      <td style="font-weight:bold;">{{ row.member_display }}</td>
-      <td style="text-align:center;">{{ row.y_min }} - {{ row.y_max }}</td>
-      <td style="text-align:center;">{{ row.tributary_display or '-' }}</td>
-      <td style="text-align:center;">{% if live.platform_intensity_kn_m2 %}{{ "%.3f"|format(live.platform_intensity_kn_m2) }}{% else %}-{% endif %}</td>
+      <td style="font-weight:bold; background:{{ live_row_bg }};">{{ row.member_display }}</td>
+      <td style="text-align:center; background:{{ live_row_bg }};">{{ row.tributary_width_display }}</td>
+      <td style="text-align:center; background:{{ live_row_bg }};">{{ "%.3f"|format(row.load_intensity_kn_m2) }}</td>
       <td style="text-align:center; font-weight:bold; background:#BFD8EE;">{{ "%.3f"|format(row.line_load_kn_m) }}</td>
     </tr>
     {% endfor %}
   </tbody>
+  <tfoot>
+    <tr>
+      <td colspan="4" style="font-style:italic; font-size:7.8pt; color:var(--navy-mid); background:var(--row-alt); padding:3px 6px;">
+        Load Intensity = <strong>{{ "%.2f"|format(live.platform_intensity_kn_m2) }} kN/m&sup2;</strong>{% if structural.swl_load_class %} &nbsp;&mdash;&nbsp; BS EN 12811-1 Class {{ structural.swl_load_class }}{% endif %}
+      </td>
+    </tr>
+  </tfoot>
 </table>
 {% endif %}
 
 {% if live.roof_rows %}
 <div style="font-size:8.8pt; font-weight:bold; color:var(--navy); margin:10px 0 3px 0; border-bottom:1.2px solid var(--navy-mid); padding-bottom:2px;">Roof Live Load</div>
-<table style="font-size:8.1pt; margin:4px 0;">
+<table style="font-size:8.4pt; margin:4px 0;">
   <thead>
     <tr>
-      <th style="width:34%;">STAAD Roof Members</th>
-      <th style="width:13%;">Elevation (m)</th>
-      <th style="width:16%;">Tributary Width (m)</th>
-      <th style="width:17%;">Roof Intensity (kN/m&sup2;)</th>
-      <th style="width:20%; background:var(--gold); color:var(--navy);">Member Load (kN/m)</th>
+      <th style="width:30%;">Member</th>
+      <th>Tributary Width (m)</th>
+      <th style="width:18%;">Roof Intensity (kN/m&sup2;)</th>
+      <th style="width:18%; background:var(--gold); color:var(--navy);">Member Load (kN/m)</th>
     </tr>
   </thead>
   <tbody>
     {% for row in live.roof_rows %}
+    {% set live_row_bg = '#EAF6EA' if row.member_role == 'Interior' else '#DDEBF3' %}
     <tr>
-      <td style="font-weight:bold;">{{ row.member_display }}</td>
-      <td style="text-align:center;">{{ row.y_min }} - {{ row.y_max }}</td>
-      <td style="text-align:center;">{{ row.tributary_display or '-' }}</td>
-      <td style="text-align:center;">{% if live.roof_intensity_kn_m2 %}{{ "%.3f"|format(live.roof_intensity_kn_m2) }}{% else %}-{% endif %}</td>
+      <td style="font-weight:bold; background:{{ live_row_bg }};">{{ row.member_display }}</td>
+      <td style="text-align:center; background:{{ live_row_bg }};">{{ row.tributary_width_display }}</td>
+      <td style="text-align:center; background:{{ live_row_bg }};">{{ "%.3f"|format(row.load_intensity_kn_m2) }}</td>
       <td style="text-align:center; font-weight:bold; background:#BFD8EE;">{{ "%.3f"|format(row.line_load_kn_m) }}</td>
     </tr>
     {% endfor %}
   </tbody>
+  <tfoot>
+    <tr>
+      <td colspan="4" style="font-style:italic; font-size:7.8pt; color:var(--navy-mid); background:var(--row-alt); padding:3px 6px;">
+        Roof Live Load Intensity = <strong>{{ "%.2f"|format(live.roof_intensity_kn_m2) }} kN/m&sup2;</strong>
+      </td>
+    </tr>
+  </tfoot>
 </table>
 {% endif %}
 
-{% if live.seat_rows %}
+{% if live.platform_rows or live.roof_rows %}
+<p style="font-size:7.8pt; font-style:italic; color:var(--navy-mid); margin:2px 0 6px 4px;">
+  Member Load = Load Intensity &times; Tributary Width. Edge members carry half the adjacent bay width;
+  interior members carry half the bay from each side.
+</p>
+{% endif %}
+
+{% if live.seat_line_load_kn_m %}
 <div style="font-size:8.8pt; font-weight:bold; color:var(--navy); margin:10px 0 3px 0; border-bottom:1.2px solid var(--navy-mid); padding-bottom:2px;">Seat Ledger Live Load</div>
-<table style="font-size:8.1pt; margin:4px 0;">
-  <thead>
-    <tr>
-      <th style="width:44%;">STAAD Seat Ledger Members</th>
-      <th style="width:16%;">Elevation (m)</th>
-      <th style="width:20%;">Specified UDL (kN/m)</th>
-      <th style="width:20%; background:var(--gold); color:var(--navy);">Applied Member Load (kN/m)</th>
-    </tr>
-  </thead>
-  <tbody>
-    {% for row in live.seat_rows %}
-    <tr>
-      <td style="font-weight:bold;">{{ row.member_display }}</td>
-      <td style="text-align:center;">{{ row.y_min }} - {{ row.y_max }}</td>
-      <td style="text-align:center;">{% if live.seat_line_load_kn_m %}{{ "%.3f"|format(live.seat_line_load_kn_m) }}{% else %}-{% endif %}</td>
-      <td style="text-align:center; font-weight:bold; background:#BFD8EE;">{{ "%.3f"|format(row.line_load_kn_m) }}</td>
-    </tr>
-    {% endfor %}
-  </tbody>
+<table style="border:none; margin:4px 0;">
+  <tr>
+    <td style="border:none; line-height:1.7;">
+      A uniform seat ledger live load of <strong>{{ "%.2f"|format(live.seat_line_load_kn_m) }} kN/m</strong> is applied
+      as a member UDL to all seat ledger members throughout the shelter.
+    </td>
+  </tr>
 </table>
 {% endif %}
-
-<div class="callout">
-  Governing Safe Working Load for the main platform = <strong>{{ structural.swl_display }} kN/m&sup2;</strong>.
-  Roof and seat live loads are separate shelter actions and are not used to inflate the platform SWL.<br/>
-  Total applied STAAD live load (all LL shelter components) = <strong>{{ structural.loads.platform_live_total_kn }} kN</strong>.
-</div>
 
 {% else %}
 <div class="sub-hdr">Live Load on Platforms</div>
@@ -702,126 +737,6 @@ tr:nth-child(even) td { background: var(--bg-row); }
 
 {% endif %}
 
-<div class="sub-hdr" style="margin-top:8px;">Wind Load</div>
-<table style="border:none; margin:4px 0;">
-  <tr>
-    <td style="border:none; width:155px; font-weight:bold; color:var(--navy-mid); font-size:8.5pt; vertical-align:top; padding:2px 8px 2px 0;">EN 1991-1-4:2005</td>
-    <td style="border:none; line-height:1.7;">
-      Wind loads were derived in accordance with EN 1991-1-4:2005 using NLNG Bonny Island site parameters.
-      Full calculation chain is given in the Wind Load Calculation sheet below.
-      {% if structural.shelter.is_shelter %}
-      The shelter ledger load is calculated from design wind pressure
-      <strong>q<sub>w</sub> = q<sub>p</sub> x C<sub>f</sub> = {{ wind.shelter_pressure_qp_kn_m2 }} x {{ wind.shelter_pressure_cf }} = {{ wind.shelter_pressure_kn_m2 }} kN/m&sup2;</strong>.
-      Member wind UDL = q<sub>w</sub> x tributary ledger height.
-      {% else %}
-      Wind UDL = <strong>{{ wind.wind_udl }} kN/m</strong> applied as a member UDL to all exposed scaffold members in the global X and Z wind directions.
-      {% endif %}
-    </td>
-  </tr>
-</table>
-<div class="callout">
-  Total Wind Load - X Axis (WLX) = <strong>{{ structural.wind_loads.total_x }} kN</strong><br/>
-  {% if structural.shelter.is_shelter %}
-  Total Wind Uplift - Y Axis (WLY) = <strong>{{ structural.wind_loads.total_y }} kN</strong><br/>
-  {% endif %}
-  Total Wind Load - Z Axis (WLZ) = <strong>{{ structural.wind_loads.total_z }} kN</strong>
-</div>
-
-{% if structural.shelter.is_shelter and structural.shelter.wind.lateral_rows %}
-<table style="font-size:8.0pt; margin:5px 0;">
-  <thead>
-    <tr>
-      <th style="width:8%;">LC</th>
-      <th style="width:8%;">Axis</th>
-      <th style="width:30%;">STAAD Ledger Members</th>
-      <th style="width:12%;">Elevation (m)</th>
-      <th style="width:15%;">Tributary Height (m)</th>
-      <th style="width:12%;">Face</th>
-      <th style="width:15%; background:var(--gold); color:var(--navy);">Member Load (kN/m)</th>
-    </tr>
-  </thead>
-  <tbody>
-    {% for row in structural.shelter.wind.lateral_rows %}
-    <tr>
-      <td style="text-align:center;">{{ row.load_case }}</td>
-      <td style="text-align:center; font-weight:bold;">WL{{ row.axis }}</td>
-      <td style="font-weight:bold;">{{ row.member_display }}</td>
-      <td style="text-align:center;">{{ row.y_min }} - {{ row.y_max }}</td>
-      <td style="text-align:center;">{{ row.tributary_display or '-' }}</td>
-      <td style="text-align:center; {% if row.is_governing %}font-weight:bold; color:var(--navy);{% endif %}">{{ row.face_role }}</td>
-      <td style="text-align:center; font-weight:bold; background:#BFD8EE;">{{ "%.3f"|format(row.line_load_kn_m) }}</td>
-    </tr>
-    {% endfor %}
-  </tbody>
-</table>
-{% endif %}
-
-{% if structural.shelter.is_shelter and structural.shelter.wind.uplift_rows %}
-<div style="font-size:8.8pt; font-weight:bold; color:var(--navy); margin:10px 0 3px 0; border-bottom:1.2px solid var(--navy-mid); padding-bottom:2px;">Wind Uplift on Roof (WLY)</div>
-<table style="font-size:8.0pt; margin:4px 0;">
-  <thead>
-    <tr>
-      <th style="width:38%;">STAAD Roof Members</th>
-      <th style="width:14%;">Elevation (m)</th>
-      <th style="width:20%;">Tributary Width/Height (m)</th>
-      <th style="width:14%;">q<sub>w</sub> (kN/m&sup2;)</th>
-      <th style="width:14%; background:var(--gold); color:var(--navy);">Uplift UDL (kN/m)</th>
-    </tr>
-  </thead>
-  <tbody>
-    {% for row in structural.shelter.wind.uplift_rows %}
-    <tr>
-      <td style="font-weight:bold;">{{ row.member_display }}</td>
-      <td style="text-align:center;">{{ row.y_min }} - {{ row.y_max }}</td>
-      <td style="text-align:center;">{{ row.tributary_display or '-' }}</td>
-      <td style="text-align:center;">{{ wind.shelter_pressure_kn_m2 }}</td>
-      <td style="text-align:center; font-weight:bold; background:#BFD8EE;">{{ "%.3f"|format(row.line_load_kn_m) }}</td>
-    </tr>
-    {% endfor %}
-  </tbody>
-</table>
-{% endif %}
-
-{# -- Load Diagrams inline -- #}
-<div class="sub-hdr" style="margin-top:8mm;">Load Diagrams</div>
-<div style="display:flex; gap:10px; flex-wrap:wrap; margin-top:6px;">
-  <div style="flex:1; min-width:140px;">
-    {% if images['load_platform_live'] %}<img src="{{ images['load_platform_live'] }}" class="app-img" style="max-height:180px;"/>
-    {% else %}<div class="img-box" style="min-height:140px;"><strong>Platform Live Load</strong><small>load_platform_live.png</small></div>{% endif %}
-    <div style="font-size:7.5pt; text-align:center; color:var(--muted); margin-top:2px;">Live Load (LL)</div>
-  </div>
-  {% if structural.handrail_loads.has_x %}
-  <div style="flex:1; min-width:140px;">
-    {% if images['load_handrail_x'] %}<img src="{{ images['load_handrail_x'] }}" class="app-img" style="max-height:180px;"/>
-    {% else %}<div class="img-box" style="min-height:140px;"><strong>Handrail X</strong><small>load_handrail_x.png</small></div>{% endif %}
-    <div style="font-size:7.5pt; text-align:center; color:var(--muted); margin-top:2px;">Handrail Load X (HLX)</div>
-  </div>
-  {% endif %}
-  {% if structural.handrail_loads.has_z %}
-  <div style="flex:1; min-width:140px;">
-    {% if images['load_handrail_z'] %}<img src="{{ images['load_handrail_z'] }}" class="app-img" style="max-height:180px;"/>
-    {% else %}<div class="img-box" style="min-height:140px;"><strong>Handrail Z</strong><small>load_handrail_z.png</small></div>{% endif %}
-    <div style="font-size:7.5pt; text-align:center; color:var(--muted); margin-top:2px;">Handrail Load Z (HLZ)</div>
-  </div>
-  {% endif %}
-  <div style="flex:1; min-width:140px;">
-    {% if images['load_wind_x'] %}<img src="{{ images['load_wind_x'] }}" class="app-img" style="max-height:180px;"/>
-    {% else %}<div class="img-box" style="min-height:140px;"><strong>Wind Load X</strong><small>load_wind_x.png</small></div>{% endif %}
-    <div style="font-size:7.5pt; text-align:center; color:var(--muted); margin-top:2px;">Wind Load X (WLX)</div>
-  </div>
-  {% if structural.shelter.is_shelter %}
-  <div style="flex:1; min-width:140px;">
-    {% if images['load_wind_y'] %}<img src="{{ images['load_wind_y'] }}" class="app-img" style="max-height:180px;"/>
-    {% else %}<div class="img-box" style="min-height:140px;"><strong>Wind Uplift Y</strong><small>load_wind_y.png</small></div>{% endif %}
-    <div style="font-size:7.5pt; text-align:center; color:var(--muted); margin-top:2px;">Wind Uplift Y (WLY)</div>
-  </div>
-  {% endif %}
-  <div style="flex:1; min-width:140px;">
-    {% if images['load_wind_z'] %}<img src="{{ images['load_wind_z'] }}" class="app-img" style="max-height:180px;"/>
-    {% else %}<div class="img-box" style="min-height:140px;"><strong>Wind Load Z</strong><small>load_wind_z.png</small></div>{% endif %}
-    <div style="font-size:7.5pt; text-align:center; color:var(--muted); margin-top:2px;">Wind Load Z (WLZ)</div>
-  </div>
-</div>
 </div>
 
 
@@ -861,11 +776,11 @@ tr:nth-child(even) td { background: var(--bg-row); }
     <tr><td style="color:var(--navy-mid); font-size:8pt;">EN 1991-1-4, Sec 4.5</td><td>q<sub>p</sub>(z) = [1 + 7*I<sub>v</sub>(z)] x 0.5 x rho x V<sub>m</sub>(z)&sup2;</td><td style="text-align:center; font-weight:bold;">{{ wind.qp_nm2 }}</td><td>N/m&sup2;</td></tr>
     {% if structural.shelter.is_shelter %}
     <tr><td colspan="4" style="background:var(--bg-hdr); font-weight:bold; padding:5px 6px; color:var(--navy);">Shelter Design Wind Pressure = q<sub>p</sub> x C<sub>f</sub></td></tr>
-    <tr><td>q<sub>p</sub> =</td><td>Peak velocity pressure used for shelter wind load</td><td style="text-align:center;">{{ wind.shelter_pressure_qp_kn_m2 }}</td><td>kN/m&sup2;</td></tr>
-    <tr><td>C<sub>f</sub> =</td><td>Force coefficient from project wind calculation</td><td style="text-align:center;">{{ wind.shelter_pressure_cf }}</td><td></td></tr>
-    <tr><td style="font-weight:bold; color:var(--navy);">q<sub>w</sub> = q<sub>p</sub> x C<sub>f</sub> =</td><td>{{ wind.shelter_pressure_source }}</td>
+    <tr><td>q<sub>p</sub> =</td><td>Peak velocity pressure (from above)</td><td style="text-align:center;">{{ wind.qp_knm2 }}</td><td>kN/m&sup2;</td></tr>
+    <tr><td>C<sub>f</sub> =</td><td>Force coefficient for circular tube</td><td style="text-align:center;">{{ wind.cf }}</td><td></td></tr>
+    <tr><td style="font-weight:bold; color:var(--navy);">q<sub>w</sub> = q<sub>p</sub> x C<sub>f</sub> =</td><td></td>
         <td style="text-align:center; font-weight:bold; background:var(--gold-lt); color:var(--navy);">{{ wind.shelter_pressure_kn_m2 }}</td><td><strong>kN/m&sup2;</strong></td></tr>
-    <tr><td colspan="4" style="font-style:italic; color:var(--muted);">Ledger member load = q<sub>w</sub> x tributary height. Vertical roof uplift WLY uses the same q<sub>w</sub> pressure basis.</td></tr>
+    <tr><td colspan="4" style="font-style:italic; color:var(--muted);">Member load = q<sub>w</sub> x tributary width. Vertical roof uplift WLY uses the same q<sub>w</sub> pressure basis.</td></tr>
     {% else %}
     <tr><td colspan="4" style="background:var(--bg-hdr); font-weight:bold; padding:5px 6px; color:var(--navy);">Wind Load = C<sub>f</sub> x q<sub>p</sub> x A<sub>f</sub></td></tr>
     <tr><td>C<sub>f</sub> =</td><td></td><td style="text-align:center;">{{ wind.cf }}</td><td></td></tr>
@@ -876,6 +791,107 @@ tr:nth-child(even) td { background: var(--bg-row); }
     {% endif %}
   </tbody>
 </table>
+
+<div class="sub-hdr" style="margin-top:10px;">Wind Load Application</div>
+<table style="border:none; margin:4px 0;">
+  <tr>
+    <td style="border:none; width:155px; font-weight:bold; color:var(--navy-mid); font-size:8.5pt; vertical-align:top; padding:2px 8px 2px 0;">EN 1991-1-4:2005</td>
+    <td style="border:none; line-height:1.7;">
+      {% if structural.shelter.is_shelter %}
+      Wind loads are applied to the shelter as member UDLs using the design wind pressure derived above,
+      independently in the global X and Z directions, with vertical uplift applied to the roof in the Y direction.
+      {% else %}
+      Wind loads were derived in accordance with EN 1991-1-4:2005 using NLNG Bonny Island site parameters.
+      Wind UDL = <strong>{{ wind.wind_udl }} kN/m</strong> applied as a member UDL to all exposed scaffold members in the global X and Z wind directions.
+      {% endif %}
+    </td>
+  </tr>
+</table>
+<div class="callout">
+  Total Wind Load - X Axis (WLX) = <strong>{{ structural.wind_loads.total_x }} kN</strong><br/>
+  {% if structural.shelter.is_shelter %}
+  Total Wind Uplift - Y Axis (WLY) = <strong>{{ structural.wind_loads.total_y }} kN</strong><br/>
+  {% endif %}
+  Total Wind Load - Z Axis (WLZ) = <strong>{{ structural.wind_loads.total_z }} kN</strong>
+</div>
+
+{% if structural.shelter.is_shelter %}
+{% set sw = structural.shelter.wind %}
+{% if sw.wind_x_rows %}
+<div style="font-size:8.8pt; font-weight:bold; color:var(--navy); margin:10px 0 3px 0; border-bottom:1.2px solid var(--navy-mid); padding-bottom:2px;">Wind Load - X Axis (WLX)</div>
+<table style="font-size:8.4pt; margin:4px 0;">
+  <thead>
+    <tr>
+      <th style="width:30%;">Member</th>
+      <th>Tributary Width (m)</th>
+      <th style="width:18%;">q<sub>w</sub> (kN/m&sup2;)</th>
+      <th style="width:18%; background:var(--gold); color:var(--navy);">Member Load (kN/m)</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for row in sw.wind_x_rows %}
+    {% set live_row_bg = '#EAF6EA' if row.member_role == 'Interior' else '#DDEBF3' %}
+    <tr>
+      <td style="font-weight:bold; background:{{ live_row_bg }};">{{ row.member_display }}</td>
+      <td style="text-align:center; background:{{ live_row_bg }};">{{ row.tributary_width_display }}</td>
+      <td style="text-align:center; background:{{ live_row_bg }};">{{ "%.3f"|format(row.load_intensity_kn_m2) }}</td>
+      <td style="text-align:center; font-weight:bold; background:#BFD8EE;">{{ "%.3f"|format(row.line_load_kn_m) }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+
+{% if sw.wind_z_rows %}
+<div style="font-size:8.8pt; font-weight:bold; color:var(--navy); margin:10px 0 3px 0; border-bottom:1.2px solid var(--navy-mid); padding-bottom:2px;">Wind Load - Z Axis (WLZ)</div>
+<table style="font-size:8.4pt; margin:4px 0;">
+  <thead>
+    <tr>
+      <th style="width:30%;">Member</th>
+      <th>Tributary Width (m)</th>
+      <th style="width:18%;">q<sub>w</sub> (kN/m&sup2;)</th>
+      <th style="width:18%; background:var(--gold); color:var(--navy);">Member Load (kN/m)</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for row in sw.wind_z_rows %}
+    {% set live_row_bg = '#EAF6EA' if row.member_role == 'Interior' else '#DDEBF3' %}
+    <tr>
+      <td style="font-weight:bold; background:{{ live_row_bg }};">{{ row.member_display }}</td>
+      <td style="text-align:center; background:{{ live_row_bg }};">{{ row.tributary_width_display }}</td>
+      <td style="text-align:center; background:{{ live_row_bg }};">{{ "%.3f"|format(row.load_intensity_kn_m2) }}</td>
+      <td style="text-align:center; font-weight:bold; background:#BFD8EE;">{{ "%.3f"|format(row.line_load_kn_m) }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+
+{% if sw.uplift_rows %}
+<div style="font-size:8.8pt; font-weight:bold; color:var(--navy); margin:10px 0 3px 0; border-bottom:1.2px solid var(--navy-mid); padding-bottom:2px;">Wind Uplift on Roof (WLY)</div>
+<table style="font-size:8.4pt; margin:4px 0;">
+  <thead>
+    <tr>
+      <th style="width:30%;">Member</th>
+      <th>Tributary Width (m)</th>
+      <th style="width:18%;">q<sub>w</sub> (kN/m&sup2;)</th>
+      <th style="width:18%; background:var(--gold); color:var(--navy);">Uplift UDL (kN/m)</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for row in sw.uplift_rows %}
+    {% set live_row_bg = '#EAF6EA' if row.member_role == 'Interior' else '#DDEBF3' %}
+    <tr>
+      <td style="font-weight:bold; background:{{ live_row_bg }};">{{ row.member_display }}</td>
+      <td style="text-align:center; background:{{ live_row_bg }};">{{ row.tributary_width_display }}</td>
+      <td style="text-align:center; background:{{ live_row_bg }};">{{ "%.3f"|format(row.load_intensity_kn_m2) }}</td>
+      <td style="text-align:center; font-weight:bold; background:#BFD8EE;">{{ "%.3f"|format(row.line_load_kn_m) }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+{% endif %}
 </div>
 
 {% if structural.shelter.is_shelter and structural.shelter.uplift.enabled %}
@@ -907,7 +923,6 @@ tr:nth-child(even) td { background: var(--bg-row); }
   </tbody>
 </table>
 <div class="callout">
-  Status: <strong>{{ up.status }}</strong>.
   {% if up.total_blocks %}
   Provide <strong>{{ up.total_blocks }} No.</strong> concrete blocks,
   <strong>{{ up.blocks_per_point }} block(s)</strong> per anchorage point.
@@ -922,44 +937,48 @@ tr:nth-child(even) td { background: var(--bg-row); }
 
 
 {# ==========================================================
-   SHEET 4 - LOAD COMBINATIONS
+   SHEET 4b - LOAD DIAGRAMS
    ========================================================== #}
-<div class="page-calc" id="load-combs">
-<div class="section-hdr">LOAD COMBINATIONS</div>
-<div class="callout" style="margin-bottom:8px;">
-  <table style="border:none; font-size:8.5pt;">
-    <tr>
-      <td style="border:none; width:155px; font-weight:bold; color:var(--navy-mid); vertical-align:top;">BS EN 12811-1, 6.2.9.2</td>
-      <td style="border:none; line-height:1.7;">
-        Load combinations in accordance with BS EN 12811-1:2003.
-        ULS combinations use gamma = <strong>1.5</strong>; SLS (characteristic) combinations use gamma = <strong>1.0</strong>.<br/>
-        <strong>DL</strong> = Dead Load &nbsp;|&nbsp;
-        <strong>LL</strong> = {% if structural.shelter.is_shelter %}Shelter live load (platform, roof, seat){% else %}Platform Live Load{% endif %} &nbsp;|&nbsp;
-        <strong>HLX/HLZ</strong> = Handrail X/Z &nbsp;|&nbsp;
-        <strong>WLX/WLZ{% if structural.shelter.is_shelter %}/WLY{% endif %}</strong> = Wind X/Z{% if structural.shelter.is_shelter %}/uplift Y{% endif %}
-        {% if counterweight.enabled %}&nbsp;|&nbsp;
-        <strong>CW</strong> = Counterweight (LC {{ counterweight.counterweight_load_case }}, LOADTYPE Dead;
-        &#947;<sub>stb</sub>&nbsp;=&nbsp;{{ counterweight.governing_cw_factor }} in ULS &nbsp;|&nbsp;
-        1.0 in SLS){% endif %}
-      </td>
-    </tr>
-  </table>
+<div class="page-calc" id="load-diagrams">
+<div class="sub-hdr">Load Diagrams</div>
+<div style="display:flex; gap:10px; flex-wrap:wrap; margin-top:6px;">
+  <div style="flex:1; min-width:140px;">
+    {% if images['load_platform_live'] %}<img src="{{ images['load_platform_live'] }}" class="app-img" style="max-height:180px;"/>
+    {% else %}<div class="img-box" style="min-height:140px;"><strong>Platform Live Load</strong><small>load_platform_live.png</small></div>{% endif %}
+    <div style="font-size:7.5pt; text-align:center; color:var(--muted); margin-top:2px;">Live Load (LL)</div>
+  </div>
+  {% if structural.handrail_loads.has_x %}
+  <div style="flex:1; min-width:140px;">
+    {% if images['load_handrail_x'] %}<img src="{{ images['load_handrail_x'] }}" class="app-img" style="max-height:180px;"/>
+    {% else %}<div class="img-box" style="min-height:140px;"><strong>Handrail X</strong><small>load_handrail_x.png</small></div>{% endif %}
+    <div style="font-size:7.5pt; text-align:center; color:var(--muted); margin-top:2px;">Handrail Load X (HLX)</div>
+  </div>
+  {% endif %}
+  {% if structural.handrail_loads.has_z %}
+  <div style="flex:1; min-width:140px;">
+    {% if images['load_handrail_z'] %}<img src="{{ images['load_handrail_z'] }}" class="app-img" style="max-height:180px;"/>
+    {% else %}<div class="img-box" style="min-height:140px;"><strong>Handrail Z</strong><small>load_handrail_z.png</small></div>{% endif %}
+    <div style="font-size:7.5pt; text-align:center; color:var(--muted); margin-top:2px;">Handrail Load Z (HLZ)</div>
+  </div>
+  {% endif %}
+  <div style="flex:1; min-width:140px;">
+    {% if images['load_wind_x'] %}<img src="{{ images['load_wind_x'] }}" class="app-img" style="max-height:180px;"/>
+    {% else %}<div class="img-box" style="min-height:140px;"><strong>Wind Load X</strong><small>load_wind_x.png</small></div>{% endif %}
+    <div style="font-size:7.5pt; text-align:center; color:var(--muted); margin-top:2px;">Wind Load X (WLX)</div>
+  </div>
+  {% if structural.shelter.is_shelter %}
+  <div style="flex:1; min-width:140px;">
+    {% if images['load_wind_y'] %}<img src="{{ images['load_wind_y'] }}" class="app-img" style="max-height:180px;"/>
+    {% else %}<div class="img-box" style="min-height:140px;"><strong>Wind Uplift Y</strong><small>load_wind_y.png</small></div>{% endif %}
+    <div style="font-size:7.5pt; text-align:center; color:var(--muted); margin-top:2px;">Wind Uplift Y (WLY)</div>
+  </div>
+  {% endif %}
+  <div style="flex:1; min-width:140px;">
+    {% if images['load_wind_z'] %}<img src="{{ images['load_wind_z'] }}" class="app-img" style="max-height:180px;"/>
+    {% else %}<div class="img-box" style="min-height:140px;"><strong>Wind Load Z</strong><small>load_wind_z.png</small></div>{% endif %}
+    <div style="font-size:7.5pt; text-align:center; color:var(--muted); margin-top:2px;">Wind Load Z (WLZ)</div>
+  </div>
 </div>
-
-<table style="font-size:8.5pt;">
-  <thead>
-    <tr><th style="width:8%;">LC No.</th><th style="width:52%;">Combination</th><th style="width:40%;">Component Loadings &amp; Factors</th></tr>
-  </thead>
-  <tbody>
-    {% for c in structural.load_combinations %}
-    <tr>
-      <td style="text-align:center; font-weight:bold; color:var(--navy);">{{ c.number }}</td>
-      <td style="font-weight:bold;">{{ c.title }}</td>
-      <td style="font-size:8pt;">{% for lid, fac in c.factors %}LC{{ lid }} x {{ fac }}{% if not loop.last %} + {% endif %}{% endfor %}</td>
-    </tr>
-    {% endfor %}
-  </tbody>
-</table>
 </div>
 
 

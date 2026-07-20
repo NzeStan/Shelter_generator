@@ -103,9 +103,6 @@ DEFAULTS = {
     'ROOF_LIVE_LOAD_KN_M2': '',
     'SEAT_LIVE_LOAD_KN_M': '',
     'PLATFORM_LIVE_LOAD_KN_M2': '',
-    'WIND_QP_KN_M2': '',
-    'WIND_FORCE_COEFFICIENT': '',
-    'WIND_PRESSURE_KN_M2': '',
     'UPLIFT_RESISTANCE_ENABLED': 'yes',
     'UPLIFT_TOTAL_WLY_KN': '',
     'UPLIFT_DEAD_LOAD_KN': '',
@@ -128,8 +125,6 @@ DEFAULTS = {
     'REVIEWED_BY_NAME':  '',
     'APPROVED_BY_ID':    '',
     'APPROVED_BY_NAME':  '',
-    'EQUIPMENT_TAG':     '',
-    'EQUIPMENT_NAME':    '',
     'WORK_ORDER':        '',
     'PURPOSE':           'maintenance activities',
     'STRUCTURE_ABOVE_GROUND_M': '',
@@ -148,9 +143,12 @@ DEFAULTS = {
 REPORT_OUTLINE = [
     ("load-summary", "Load Summary"),
     ("general-note", "General Note, Material Properties & Modelling Philosophy"),
+    ("load-combs", "Load Combinations"),
     ("load-cases", "Load Cases"),
     ("wind-calc", "Wind Load Calculation"),
-    ("load-combs", "Load Combinations"),
+    ("uplift-resistance", "Uplift Resistance / Counterweight Calculation"),
+    ("load-diagrams", "Load Diagrams"),
+    ("counterweight-check", "Counterweight Stability Check"),
     ("uc-summary", "Utilization Ratio Summary"),
     ("connection-check", "Connection Stability Check"),
     ("deflection-check", "Deflection Check Results"),
@@ -287,33 +285,6 @@ def _project_int(project, *keys, default=0):
     return int(round(value)) if value is not None else default
 
 
-def _parse_member_refs(text):
-    tokens = re.findall(r'\d+|TO', str(text or '').upper())
-    members = []
-    i = 0
-    while i < len(tokens):
-        if not tokens[i].isdigit():
-            i += 1
-            continue
-        start = int(tokens[i])
-        if i + 2 < len(tokens) and tokens[i + 1] == 'TO' and tokens[i + 2].isdigit():
-            end = int(tokens[i + 2])
-            step = 1 if end >= start else -1
-            members.extend(range(start, end + step, step))
-            i += 3
-        else:
-            members.append(start)
-            i += 1
-    return set(members)
-
-
-def _format_staad_member_text(text, members=None):
-    clean = re.sub(r'\s+', ' ', str(text or '').strip())
-    if clean:
-        return f"Members {clean}"
-    return _format_member_ids(members or [])
-
-
 LOAD_CLASS_INTENSITIES = {
     "1": 0.75,
     "2": 1.50,
@@ -436,21 +407,28 @@ def _live_member_geometry(member_id, structural):
     }
 
 
-def _assign_tributary_widths(member_entries):
+def _assign_tributary_widths(member_entries, group_by_elevation=True):
+    """Classify each member as Edge/Interior and size its tributary width from the spacing
+    of neighbouring members. group_by_elevation=False ignores the member's Y level when
+    grouping - needed for sloped/roof members that never share an exact elevation."""
+    def _key(entry, geom):
+        if group_by_elevation:
+            return (entry["load_case"], geom["axis"], geom["y_mid"])
+        return (entry["load_case"], geom["axis"])
+
     groups = {}
     for entry in member_entries:
         geom = entry.get("geometry")
         if not geom:
             continue
-        key = (entry["load_case"], geom["axis"], geom["y_mid"])
-        groups.setdefault(key, set()).add(geom["perp_coord"])
+        groups.setdefault(_key(entry, geom), set()).add(geom["perp_coord"])
 
     for entry in member_entries:
         geom = entry.get("geometry")
         if not geom:
             continue
 
-        coords = sorted(groups.get((entry["load_case"], geom["axis"], geom["y_mid"]), []))
+        coords = sorted(groups.get(_key(entry, geom), []))
         if len(coords) < 2 or geom["perp_coord"] not in coords:
             continue
 
@@ -734,182 +712,189 @@ def _member_group_summary(member_ids, structural):
     }
 
 
-def _line_load_row(load, structural, basis, configured_value=None):
-    line_load = abs(float(load.get("value", 0.0)))
-    summary = _member_group_summary(load.get("members") or [], structural)
-    row = {
-        **summary,
-        "load_case": load.get("load_case"),
-        "title": load.get("title") or "LL",
-        "axis": load.get("direction", ""),
-        "member_display": _format_staad_member_text(load.get("member_text"), load.get("members")),
-        "line_load_kn_m": round(line_load, 3),
-        "basis": basis,
-        "configured_value": configured_value,
-        "tributary_display": "",
-        "working": f"{_format_load_value(line_load)} kN/m",
-        "estimated_total_kn": round(line_load * summary.get("total_length_m", 0.0), 3),
-    }
+def _shelter_member_rows(entries, structural, intensity, group_by_elevation=True):
+    """Build Edge/Interior tributary-width rows for a shelter load category (platform, roof,
+    or wind face). Mirrors the reference _platform_live_workings presentation - Member /
+    Tributary Width (with working) / Load Intensity / Member Load - but collapses everything
+    into role-based rows (no elevation, no per-member listing) because shelter members are
+    numerous. group_by_elevation=False ignores the Y level when grouping neighbours - needed
+    for sloped/gable roof (and roof-uplift) members that never share an exact Y level; flat
+    levels (main platform, wind ledger rows) keep elevation grouping so unrelated rows can't
+    contaminate each other's tributary-width calculation."""
+    member_entries = [
+        {
+            "load_case": entry.get("load_case", 0),
+            "member_id": entry["member_id"],
+            "line_load_kn_m": entry["line_load_kn_m"],
+            "geometry": _live_member_geometry(entry["member_id"], structural),
+        }
+        for entry in entries
+    ]
+    _assign_tributary_widths(member_entries, group_by_elevation=group_by_elevation)
 
-    if configured_value and configured_value > 0.0 and basis in {"roof", "platform", "wind"}:
-        tributary = line_load / configured_value
-        row["tributary_width_m"] = round(tributary, 3)
-        row["tributary_display"] = _format_load_value(tributary)
-        unit = "m" if basis != "wind" else "m tributary height"
-        row["working"] = (
-            f"{_format_load_value(configured_value)} x "
-            f"{_format_load_value(tributary)} = {_format_load_value(line_load)}"
+    grouped = {}
+    for entry in member_entries:
+        line_load = entry["line_load_kn_m"]
+        tw = entry.get("tributary_width_m")
+        tw_display = entry.get("tributary_width_display")
+        role = entry.get("member_role")
+        if not tw:
+            role = role or "Loaded"
+            if not intensity:
+                continue
+            tw = round(line_load / intensity, 3)
+            tw_display = _fmt_width(tw)
+
+        key = (role, tw_display, round(line_load, 3))
+        row = grouped.setdefault(key, {
+            "count": 0,
+            "member_role": role,
+            "tributary_width_m": round(tw, 3),
+            "tributary_width_display": tw_display,
+            "line_load_kn_m": round(line_load, 3),
+        })
+        row["count"] += 1
+
+    rows = []
+    for row in grouped.values():
+        load_intensity = intensity if intensity else (
+            row["line_load_kn_m"] / row["tributary_width_m"] if row["tributary_width_m"] else row["line_load_kn_m"]
         )
-        row["tributary_unit"] = unit
-    return row
+        row["load_intensity_kn_m2"] = round(load_intensity, 3)
+        row.pop("count")
+        row["member_display"] = f"{row['member_role']} Members"
+        row["working"] = (
+            f"{_format_load_value(row['load_intensity_kn_m2'])} x "
+            f"{_fmt_width(row['tributary_width_m'])} = {_format_load_value(row['line_load_kn_m'])}"
+        )
+        rows.append(row)
+
+    # Different elevation rows (e.g. separate wind ledger levels) can independently produce
+    # the same real bay width/load - one row's neighbours may resolve to Edge/Interior while
+    # another falls back to "Loaded". Merge duplicates so the same bay isn't shown twice.
+    consolidated = {}
+    for row in rows:
+        key = (round(row["tributary_width_m"], 3), round(row["line_load_kn_m"], 3))
+        existing = consolidated.get(key)
+        if existing is None or (existing["member_role"] == "Loaded" and row["member_role"] != "Loaded"):
+            consolidated[key] = row
+    rows = list(consolidated.values())
+
+    rows.sort(key=lambda r: (0 if r["member_role"] == "Edge" else 1, r["tributary_width_m"], r["line_load_kn_m"]))
+    return rows
 
 
-def _shelter_live_workings(project, structural):
-    roof_intensity = _project_float(project, "ROOF_LIVE_LOAD_KN_M2", "LIVE_LOAD_ROOF_KN_M2")
+def _classify_shelter_live_members(project, structural):
+    """Classify every STAAD platform-live-load member group into roof, seat, or main
+    walking-platform buckets, purely from geometry (roof-band elevation) and UDL magnitude
+    (seat UDL match) - no manual overrides. Shared by the live-load working tables and the
+    platform-boarding node detector so both agree on which members belong to which zone."""
     seat_line_load = _project_float(project, "SEAT_LIVE_LOAD_KN_M", "LIVE_LOAD_SEAT_KN_M")
-    platform_intensity = _project_float(project, "PLATFORM_LIVE_LOAD_KN_M2", "MAIN_PLATFORM_LIVE_LOAD_KN_M2")
-    if platform_intensity is None:
-        platform_intensity, _ = _project_load_intensity(project)
-
-    roof_members = _parse_member_refs(project.get("ROOF_LIVE_MEMBERS"))
-    seat_members = _parse_member_refs(project.get("SEAT_LIVE_MEMBERS"))
-    platform_members = _parse_member_refs(project.get("PLATFORM_LIVE_MEMBERS"))
-
     geom = structural.get("geometry", {})
     y_max = geom.get("y_max", geom.get("height", 0.0))
     height = geom.get("height", 0.0)
     roof_band = max(0.5, 0.20 * height)
 
-    result = {
-        "roof_intensity_kn_m2": roof_intensity,
-        "seat_line_load_kn_m": seat_line_load,
-        "platform_intensity_kn_m2": platform_intensity,
-        "roof_rows": [],
-        "seat_rows": [],
-        "platform_rows": [],
-    }
+    roof_members, seat_members, platform_members = set(), set(), set()
+    roof_entries, seat_entries, platform_entries = [], [], []
+    member_sets = {"roof": roof_members, "seat": seat_members, "platform": platform_members}
+    entry_lists = {"roof": roof_entries, "seat": seat_entries, "platform": platform_entries}
 
     for load in (structural.get("loads", {}) or {}).get("platform_live_member_loads", []):
-        members = set(load.get("members") or [])
+        members = load.get("members") or []
         summary = _member_group_summary(members, structural)
         line_load = abs(float(load.get("value", 0.0)))
 
-        if roof_members and members & roof_members:
+        if summary.get("y_max", 0.0) >= y_max - roof_band:
             category = "roof"
-        elif seat_members and members & seat_members:
-            category = "seat"
-        elif platform_members and members & platform_members:
-            category = "platform"
-        elif summary.get("y_max", 0.0) >= y_max - roof_band:
-            category = "roof"
-        elif (
-            seat_line_load
-            and abs(line_load - seat_line_load) <= max(0.025, seat_line_load * 0.035)
-            and summary.get("dominant_axis") == "X"
-        ):
+        elif seat_line_load and abs(line_load - seat_line_load) <= max(0.025, seat_line_load * 0.035):
             category = "seat"
         else:
             category = "platform"
 
-        if category == "roof":
-            result["roof_rows"].append(_line_load_row(load, structural, "roof", roof_intensity))
-        elif category == "seat":
-            result["seat_rows"].append(_line_load_row(load, structural, "seat", seat_line_load))
-        else:
-            result["platform_rows"].append(_line_load_row(load, structural, "platform", platform_intensity))
+        for member_id in members:
+            mid = int(member_id)
+            member_sets[category].add(mid)
+            entry_lists[category].append({
+                "member_id": mid,
+                "line_load_kn_m": line_load,
+                "load_case": load.get("load_case"),
+            })
 
-    for key in ("roof_rows", "seat_rows", "platform_rows"):
-        result[key].sort(key=lambda row: (
-            row.get("y_mid", 0.0),
-            row.get("line_load_kn_m", 0.0),
-            row.get("member_display", ""),
-        ))
+    return {
+        "seat_line_load": seat_line_load,
+        "roof_members": roof_members, "seat_members": seat_members, "platform_members": platform_members,
+        "roof_entries": roof_entries, "seat_entries": seat_entries, "platform_entries": platform_entries,
+    }
 
-    platform_rows = result["platform_rows"]
+
+def _shelter_live_workings(project, structural):
+    """Roof, seat-ledger, and main walking-platform live loads for shelter reports.
+    Members are classified automatically from STAAD elevations and UDLs - no manual overrides."""
+    roof_intensity = _project_float(project, "ROOF_LIVE_LOAD_KN_M2", "LIVE_LOAD_ROOF_KN_M2")
+    platform_intensity = _project_float(project, "PLATFORM_LIVE_LOAD_KN_M2", "MAIN_PLATFORM_LIVE_LOAD_KN_M2")
+    if platform_intensity is None:
+        platform_intensity, _ = _project_load_intensity(project)
+
+    classified = _classify_shelter_live_members(project, structural)
+    seat_line_load = classified["seat_line_load"]
+    platform_entries = classified["platform_entries"]
+    roof_entries = classified["roof_entries"]
+    seat_entries = classified["seat_entries"]
+
+    platform_rows = _shelter_member_rows(platform_entries, structural, platform_intensity, group_by_elevation=True)
     if platform_intensity is None and platform_rows:
-        inferred = []
+        platform_intensity = round(max(r["load_intensity_kn_m2"] for r in platform_rows), 3)
         for row in platform_rows:
-            tw = row.get("tributary_width_m")
-            if tw:
-                inferred.append(row["line_load_kn_m"] / tw)
-        if inferred:
-            result["platform_intensity_kn_m2"] = round(max(inferred), 3)
+            row["load_intensity_kn_m2"] = platform_intensity
 
-    return result
+    roof_rows = _shelter_member_rows(roof_entries, structural, roof_intensity, group_by_elevation=False)
+    seat_member_count = len({e["member_id"] for e in seat_entries})
 
-
-def _shelter_wind_pressure(project, wind):
-    override = _project_float(project, "WIND_PRESSURE_KN_M2", "DESIGN_WIND_PRESSURE_KN_M2", "QW_KN_M2")
-    qp = _project_float(project, "WIND_QP_KN_M2", "QP_KN_M2")
-    cf = _project_float(project, "WIND_FORCE_COEFFICIENT", "WIND_CF", "CF")
-
-    if override is not None:
-        pressure = override
-        source = "project_info WIND_PRESSURE_KN_M2"
-    else:
-        qp_used = qp if qp is not None else float(wind.get("qp_knm2", 0.0) or 0.0)
-        cf_used = cf if cf is not None else float(wind.get("cf", 1.0) or 1.0)
-        pressure = qp_used * cf_used
-        qp = qp_used
-        cf = cf_used
-        source = "project_info qp x Cf" if _project_value(project, "WIND_QP_KN_M2", "QP_KN_M2") else "calculated qp x Cf"
-
-    wind["shelter_pressure_kn_m2"] = round(pressure, 3)
-    wind["shelter_pressure_qp_kn_m2"] = round(qp if qp is not None else pressure, 6)
-    wind["shelter_pressure_cf"] = round(cf if cf is not None else 1.0, 6)
-    wind["shelter_pressure_source"] = source
-    return wind["shelter_pressure_kn_m2"]
+    return {
+        "roof_intensity_kn_m2": roof_intensity,
+        "seat_line_load_kn_m": seat_line_load,
+        "seat_member_count": seat_member_count,
+        "platform_intensity_kn_m2": platform_intensity,
+        "roof_rows": roof_rows,
+        "platform_rows": platform_rows,
+    }
 
 
-def _shelter_wind_workings(project, structural, wind_pressure):
-    shelter_type = str(project.get("SHELTER_TYPE") or "gable").strip().lower()
-    rows = []
-    uplift_rows = []
+def _shelter_wind_pressure(wind):
+    """Shelter design wind pressure qw = qp x Cf, generated entirely from the EN 1991-1-4
+    calculation (wind.qp_knm2, wind.cf) - never overridden from project_info."""
+    pressure = round(float(wind.get("qp_knm2", 0.0) or 0.0) * float(wind.get("cf", 1.0) or 1.0), 3)
+    wind["shelter_pressure_kn_m2"] = pressure
+    return pressure
+
+
+def _shelter_wind_workings(structural, wind_pressure):
+    """Wind load application on shelter members, presented per face (WLX, WLZ) plus roof
+    uplift (WLY), using the same Edge/Interior tributary-width presentation as live loads."""
+    lateral_entries = {"X": [], "Z": []}
+    uplift_entries = []
 
     for case in structural.get("load_cases", []):
         if case.get("category") != "wind":
             continue
         for udl in case.get("member_udls", []):
-            load = {
-                "load_case": case["number"],
-                "title": case.get("title") or "Wind",
-                "direction": udl.get("direction"),
-                "value": udl.get("value"),
-                "members": udl.get("members", []),
-                "member_text": udl.get("member_text", ""),
-            }
-            row = _line_load_row(load, structural, "wind", wind_pressure)
-            row["wind_title"] = case.get("title") or f"LC {case['number']}"
-            if udl.get("direction") == "Y":
-                uplift_rows.append(row)
-            else:
-                rows.append(row)
+            direction = udl.get("direction")
+            line_load = abs(float(udl.get("value", 0.0)))
+            entries = [
+                {"member_id": int(m), "line_load_kn_m": line_load, "load_case": case.get("number")}
+                for m in (udl.get("members") or [])
+            ]
+            if direction == "Y":
+                uplift_entries.extend(entries)
+            elif direction in lateral_entries:
+                lateral_entries[direction].extend(entries)
 
-    for axis in ("X", "Z"):
-        axis_rows = [row for row in rows if row.get("axis") == axis]
-        if not axis_rows:
-            continue
-        max_load = max(row["line_load_kn_m"] for row in axis_rows)
-        varying = len({round(row["line_load_kn_m"], 3) for row in axis_rows}) > 1
-        for row in axis_rows:
-            if "slope" in shelter_type and varying:
-                row["face_role"] = "Windward / governing" if abs(row["line_load_kn_m"] - max_load) < 0.002 else "Leeward / lower"
-            else:
-                row["face_role"] = "Symmetric"
-            row["is_governing"] = abs(row["line_load_kn_m"] - max_load) < 0.002
-
-    rows.sort(key=lambda row: (
-        row.get("axis", ""),
-        row.get("y_mid", 0.0),
-        row.get("line_load_kn_m", 0.0),
-        row.get("member_display", ""),
-    ))
-    uplift_rows.sort(key=lambda row: (
-        row.get("y_mid", 0.0),
-        row.get("line_load_kn_m", 0.0),
-        row.get("member_display", ""),
-    ))
-    return {"lateral_rows": rows, "uplift_rows": uplift_rows}
+    return {
+        "wind_x_rows": _shelter_member_rows(lateral_entries["X"], structural, wind_pressure, group_by_elevation=True),
+        "wind_z_rows": _shelter_member_rows(lateral_entries["Z"], structural, wind_pressure, group_by_elevation=True),
+        "uplift_rows": _shelter_member_rows(uplift_entries, structural, wind_pressure, group_by_elevation=False),
+    }
 
 
 def _load_case_total_y(structural, category, fallback_case=None):
@@ -971,9 +956,9 @@ def _shelter_uplift_resistance(project, structural):
 
 
 def _build_shelter_data(project, structural, wind):
-    wind_pressure = _shelter_wind_pressure(project, wind)
+    wind_pressure = _shelter_wind_pressure(wind)
     live = _shelter_live_workings(project, structural)
-    wind_workings = _shelter_wind_workings(project, structural, wind_pressure)
+    wind_workings = _shelter_wind_workings(structural, wind_pressure)
     uplift = _shelter_uplift_resistance(project, structural)
     return {
         "is_shelter": True,
@@ -1539,15 +1524,6 @@ def _brief_description(project, structural, structure_above_ground):
     article = _indefinite_article(scaffold_type)
     location_text = str(project.get("LOCATION") or "").strip()
 
-    equipment_bits = []
-    if str(project.get("EQUIPMENT_NAME") or "").strip():
-        equipment_bits.append(str(project["EQUIPMENT_NAME"]).strip())
-    if str(project.get("EQUIPMENT_TAG") or "").strip():
-        equipment_bits.append(f"equipment tag {str(project['EQUIPMENT_TAG']).strip()}")
-    equipment_text = ""
-    if equipment_bits:
-        equipment_text = " of the " + ", ".join(equipment_bits)
-
     work_order = str(project.get("WORK_ORDER") or "").strip()
     work_order_text = f" under work order {work_order}" if work_order else ""
     location_sentence = f" at {location_text}" if location_text else ""
@@ -1567,7 +1543,7 @@ def _brief_description(project, structural, structure_above_ground):
     if _is_shelter_project(project):
         components = ["standards", "ledgers", "transoms", "bracing", "roof shelter framing"]
         if has_platforms:
-            components.append("working platform and seat ledgers")
+            components.append("walking platform and seat ledgers")
         if structural.get("shelter", {}).get("tied"):
             components.append("support/tie arrangements")
 
@@ -1578,7 +1554,7 @@ def _brief_description(project, structural, structure_above_ground):
 
     return (
         f"This document describes the structural design of {article} {scaffold_type} scaffold required for "
-        f"{purpose}{equipment_text}{work_order_text}{location_sentence}. "
+        f"{purpose}{work_order_text}{location_sentence}. "
         f"The scaffold envelope is {structural['dimension_display']} (length x width x height) and "
         f"is configured with {component_text} as indicated on the approved drawing.{height_sentence}"
     )
@@ -1655,104 +1631,134 @@ def _run_command(label, command, cwd, timeout=300):
     return True
 
 
-def _detect_platform_quads(structural):
-    """Detect boarded platform rectangles from LL GY transoms.
+def _boarding_quad_corners(node_ids, nodes, x0, x1, z0, z1, y_level=None):
+    """Find the actual STAAD node nearest each of the 4 plan corners of the
+    (x0,z0)-(x1,z0)-(x1,z1)-(x0,z1) rectangle. y_level restricts the search to nodes near
+    that elevation (flat zones); leave it None for a sloped zone, where the nearest node in
+    plan is used regardless of its Y (each corner keeps its own real elevation)."""
+    by_xz = {}
+    for nid in node_ids:
+        coord = nodes.get(nid)
+        if not coord:
+            continue
+        if y_level is not None and abs(coord[1] - y_level) > 0.15:
+            continue
+        by_xz[(coord[0], coord[2])] = nid
 
-    Each loaded transom defines the full strip it supports.  Z-spanning transoms
-    at different X positions that share the same Z-range form one front/back
-    strip.  X-spanning transoms at different Z positions sharing the same X-range
-    form a side strip.  The bounding rectangle of each group becomes a quad.
-    """
+    if not by_xz:
+        return None
+
+    def _nearest(x, z):
+        return min(by_xz.items(), key=lambda kv: (kv[0][0] - x) ** 2 + (kv[0][1] - z) ** 2)[1]
+
+    corners = [_nearest(x0, z0), _nearest(x1, z0), _nearest(x1, z1), _nearest(x0, z1)]
+    if len(set(corners)) != 4:
+        return None
+    return corners
+
+
+def _order_quad_ccw(quad, nodes):
     import math
-    load_cases = structural.get('load_cases', [])
-    members    = structural.get('members', {})
-    nodes      = structural.get('geometry', {}).get('nodes', {})
+    xz = [nodes[n] for n in quad]
+    cx = sum(c[0] for c in xz) / 4
+    cz = sum(c[2] for c in xz) / 4
+    angles = [math.atan2(c[2] - cz, c[0] - cx) for c in xz]
+    return [n for _, n in sorted(zip(angles, quad))]
 
-    ll_member_ids = set()
-    for case in load_cases:
-        if case.get('category') == 'platform_live':
-            for udl in case.get('member_udls', []):
-                if udl.get('direction', '').upper() == 'Y':
-                    for mid in udl.get('members', []):
-                        ll_member_ids.add(int(mid))
 
-    if not ll_member_ids:
-        return []
-
-    # Classify each horizontal LL member by Y-level and span direction
-    y_z_strips = {}   # ylevel -> {(z_min, z_max): [x_pos, ...]}  Z-spanning transoms
-    y_x_strips = {}   # ylevel -> {(x_min, x_max): [z_pos, ...]}  X-spanning transoms
-
-    for mid in ll_member_ids:
-        mem = members.get(mid)
-        if not mem:
+def _member_node_ids(member_ids, members):
+    ids = set()
+    for mid in member_ids:
+        m = members.get(mid)
+        if not m:
             continue
-        j1, j2 = mem.get('j1'), mem.get('j2')
-        c1, c2 = nodes.get(j1), nodes.get(j2)
-        if not c1 or not c2:
-            continue
-        y1, y2 = round(c1[1], 1), round(c2[1], 1)
-        if abs(y1 - y2) > 0.1:
-            continue
-        ylevel = round((y1 + y2) / 2, 1)
-        x1, z1, x2, z2 = c1[0], c1[2], c2[0], c2[2]
-        dx, dz = abs(x2 - x1), abs(z2 - z1)
+        ids.add(m.get("j1"))
+        ids.add(m.get("j2"))
+    ids.discard(None)
+    return ids
 
-        if dz > dx:  # Z-spanning transom
-            key = (round(min(z1, z2), 2), round(max(z1, z2), 2))
-            y_z_strips.setdefault(ylevel, {}).setdefault(key, []).append(round((x1 + x2) / 2, 2))
-        elif dx > dz:  # X-spanning transom
-            key = (round(min(x1, x2), 2), round(max(x1, x2), 2))
-            y_x_strips.setdefault(ylevel, {}).setdefault(key, []).append(round((z1 + z2) / 2, 2))
+
+def _detect_shelter_boarding_quads(project, structural):
+    """Whole-area boarded zones for the 3D renderer - one quad for the entire main
+    walking-platform area and one for the entire seat-ledger area, plus one quad per
+    roof plane (two for a gable roof, split at the ridge; one for a mono-pitch/sloped
+    roof), each built from the 4 real STAAD nodes forming the corners of that area -
+    not one quad per bay."""
+    nodes = structural.get("geometry", {}).get("nodes", {})
+    members = structural.get("members", {})
+    classified = _classify_shelter_live_members(project, structural)
 
     quads = []
-    for ylevel in set(y_z_strips) | set(y_x_strips):
-        # Node lookup: rounded (x, z) → node id
-        node_xz = {}
-        for nid, coord in nodes.items():
-            if abs(coord[1] - ylevel) < 0.15:
-                node_xz[(round(coord[0], 1), round(coord[2], 1))] = nid
 
-        # Z-spanning groups → front/back strips
-        for (z_min, z_max), x_positions in (y_z_strips.get(ylevel) or {}).items():
-            x0, x1_ = round(min(x_positions), 1), round(max(x_positions), 1)
-            z0, z1_ = round(z_min, 1), round(z_max, 1)
-            ns = [node_xz.get((x0, z0)), node_xz.get((x1_, z0)),
-                  node_xz.get((x1_, z1_)), node_xz.get((x0, z1_))]
-            if all(n is not None for n in ns) and len(set(ns)) == 4:
-                quads.append(ns)
+    for key in ("platform", "seat"):
+        node_ids = _member_node_ids(classified[f"{key}_members"], members)
+        coords = [nodes[n] for n in node_ids if n in nodes]
+        if len(coords) < 4:
+            continue
+        xs = [c[0] for c in coords]
+        zs = [c[2] for c in coords]
+        level_y = sum(c[1] for c in coords) / len(coords)
+        quad = _boarding_quad_corners(node_ids, nodes, min(xs), max(xs), min(zs), max(zs), y_level=level_y)
+        if quad:
+            quads.append(quad)
 
-        # X-spanning groups → side strips
-        for (x_min, x_max), z_positions in (y_x_strips.get(ylevel) or {}).items():
-            z0, z1_ = round(min(z_positions), 1), round(max(z_positions), 1)
-            x0, x1_ = round(x_min, 1), round(x_max, 1)
-            ns = [node_xz.get((x0, z0)), node_xz.get((x1_, z0)),
-                  node_xz.get((x1_, z1_)), node_xz.get((x0, z1_))]
-            if all(n is not None for n in ns) and len(set(ns)) == 4:
-                quads.append(ns)
+    roof_node_ids = _member_node_ids(classified["roof_members"], members)
+    roof_coords = [nodes[n] for n in roof_node_ids if n in nodes]
+    if len(roof_coords) >= 4:
+        xs = [c[0] for c in roof_coords]
+        zs = [c[2] for c in roof_coords]
+        shelter_type = str(project.get("SHELTER_TYPE") or "gable").strip().lower()
 
-    # Sort each quad's nodes CCW by angle from centroid
-    ordered = []
-    for quad in quads:
-        xz = [nodes[n] for n in quad]
-        cx = sum(c[0] for c in xz) / 4
-        cz = sum(c[2] for c in xz) / 4
-        angles = [math.atan2(c[2] - cz, c[0] - cx) for c in xz]
-        ordered.append([n for _, n in sorted(zip(angles, quad))])
+        split_done = False
+        if "gable" in shelter_type:
+            # The ridge is the roof's highest line of nodes. It runs along whichever plan
+            # axis has the larger spread among the highest-elevation nodes; split the roof
+            # there into its two sloped planes (each still a real-node 4-corner quad). If
+            # that ridge sits at the edge of the footprint rather than inside it, this is
+            # really a single-plane (mono-pitch) roof, not a two-sided gable - skip the
+            # split so it isn't cut into a bogus second sliver.
+            y_top = max(c[1] for c in roof_coords)
+            ridge_nodes = [nodes[n] for n in roof_node_ids
+                           if n in nodes and nodes[n][1] >= y_top - 0.02]
+            rxs = [c[0] for c in ridge_nodes]
+            rzs = [c[2] for c in ridge_nodes]
+            if (max(rxs) - min(rxs)) >= (max(rzs) - min(rzs)):
+                span = max(zs) - min(zs)
+                ridge_z = sum(rzs) / len(rzs)
+                if span > 0 and min(ridge_z - min(zs), max(zs) - ridge_z) > 0.1 * span:
+                    for z0, z1 in ((min(zs), ridge_z), (ridge_z, max(zs))):
+                        quad = _boarding_quad_corners(roof_node_ids, nodes, min(xs), max(xs), z0, z1)
+                        if quad:
+                            quads.append(quad)
+                    split_done = True
+            else:
+                span = max(xs) - min(xs)
+                ridge_x = sum(rxs) / len(rxs)
+                if span > 0 and min(ridge_x - min(xs), max(xs) - ridge_x) > 0.1 * span:
+                    for x0, x1 in ((min(xs), ridge_x), (ridge_x, max(xs))):
+                        quad = _boarding_quad_corners(roof_node_ids, nodes, x0, x1, min(zs), max(zs))
+                        if quad:
+                            quads.append(quad)
+                    split_done = True
 
-    return ordered
+        if not split_done:
+            quad = _boarding_quad_corners(roof_node_ids, nodes, min(xs), max(xs), min(zs), max(zs))
+            if quad:
+                quads.append(quad)
+
+    return [_order_quad_ccw(q, nodes) for q in quads]
 
 
-def _write_platforms_txt(structural):
-    quads = _detect_platform_quads(structural)
+def _write_platforms_txt(project, structural):
+    quads = _detect_shelter_boarding_quads(project, structural)
     platforms_path = RENDERER_DIR / "platforms.txt"
     if not quads:
-        print("  Platforms : no LL quads detected; keeping existing platforms.txt")
+        print("  Platforms : no live-load zones detected; keeping existing platforms.txt")
         return
     try:
         lines = ["#BOARDED_PLATFORMS:"] + [','.join(str(n) for n in q) for q in quads]
         platforms_path.write_text('\n'.join(lines) + '\n', encoding='utf-8')
-        print(f"  Platforms : auto-detected {len(quads)} quad(s) -> platforms.txt")
+        print(f"  Platforms : auto-detected {len(quads)} zone(s) -> platforms.txt")
     except Exception as exc:
         print(f"  [WARN] Could not write platforms.txt: {exc}")
 
@@ -2225,9 +2231,27 @@ def make_install_notes(structural, project=None):
             f"({kicker:.3f}m) to form the first stable frame.",
         ]
 
-    for ml in mids:
+    # Sloped/gable roof geometry can produce dozens of distinct mid-lift elevations (one per
+    # purlin along the slope). Cluster levels within 0.15m of each other into a single phrase
+    # so the note stays a single sentence instead of repeating near-identical lines.
+    if mids:
+        clusters = [[mids[0]]]
+        for ml in sorted(mids)[1:]:
+            if ml - clusters[-1][-1] <= 0.15:
+                clusters[-1].append(ml)
+            else:
+                clusters.append([ml])
+
+        phrases = []
+        for cluster in clusters:
+            if len(cluster) == 1:
+                phrases.append(f"{cluster[0]:.1f}m")
+            else:
+                phrases.append(f"{cluster[0]:.1f}m to {cluster[-1]:.1f}m (progressively, following the roof slope)")
+
+        heights_text = phrases[0] if len(phrases) == 1 else ", ".join(phrases[:-1]) + f" and {phrases[-1]}"
         notes.append(
-            f"Install mid-level horizontal ledgers and transoms at {ml:.1f}m height in "
+            f"Install mid-level horizontal ledgers and transoms at {heights_text} in "
             f"accordance with the working drawing."
         )
 
@@ -2298,7 +2322,7 @@ def main():
     )
 
     if not args.skip_3d_render and _bool_setting(project.get("AUTO_RENDER_3D_MODEL"), True):
-        _write_platforms_txt(structural)
+        _write_platforms_txt(project, structural)
         auto_render_3d_model(std_path)
 
     engineering_drawings = []
@@ -2408,8 +2432,6 @@ def main():
         fy_governing = sr.get('net_fy_at_fixed', {}).get('governing')
         if fy_governing:
             tie_sum_fy = fy_governing['total_y']
-    if _optional_float(project.get('TIE_FORCE_FY')) is not None:
-        tie_sum_fy = _optional_float(project.get('TIE_FORCE_FY'))
 
     # -- Deflection L: look up member length from STAAD geometry -----------------
     members_dict = structural.get('members', {})

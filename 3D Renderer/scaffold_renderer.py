@@ -600,11 +600,12 @@ def build_platform_surface(
     thickness: float = PLATFORM_THICK,
 ) -> "pv.PolyData | None":
     """
-    Build a solid horizontal platform slab from footprint node coordinates.
+    Build a solid platform/roof-panel slab from footprint node coordinates.
 
-    The selected nodes define the outside boundary of the platform in X/Z
-    plan view, so concave footprints such as L-shapes keep their cut-outs
-    instead of being filled as a convex triangulation.
+    The selected nodes define the outside boundary of the panel in X/Z plan view, so
+    concave footprints such as L-shapes keep their cut-outs instead of being filled as a
+    convex triangulation. Each vertex keeps its own real Y, so a sloped roof panel renders
+    as an inclined plane instead of being flattened to one level.
     """
     pts = np.array(corner_coords, dtype=float)
     pts = _remove_duplicate_footprint_points(pts)
@@ -613,12 +614,8 @@ def build_platform_surface(
         return None
 
     y_spread = float(np.ptp(pts[:, 1]))
-    level_y = float(np.median(pts[:, 1]))
     if y_spread > 0.01:
-        print(
-            f"  [WARN] Platform node heights vary by {y_spread:.3f} m; "
-            f"using median level Y={level_y:.3f} m"
-        )
+        print(f"  Panel     : sloped ({y_spread:.3f} m rise) - rendering as an inclined plane")
 
     pts2d = np.column_stack([pts[:, 0], pts[:, 2]])
     outline = _platform_outline_order(pts2d)
@@ -632,12 +629,13 @@ def build_platform_surface(
         print("  [WARN] Platform footprint could not be triangulated; skipped")
         return None
 
+    ys = pts[order, 1]
     pts2d = pts2d[order]
     n = len(pts2d)
 
     half = thickness / 2.0
-    top = np.column_stack([pts2d[:, 0], np.full(n, level_y + half), pts2d[:, 1]])
-    bot = np.column_stack([pts2d[:, 0], np.full(n, level_y - half), pts2d[:, 1]])
+    top = np.column_stack([pts2d[:, 0], ys + half, pts2d[:, 1]])
+    bot = np.column_stack([pts2d[:, 0], ys - half, pts2d[:, 1]])
     mesh_pts = np.vstack([top, bot])
 
     faces: list[int] = []
