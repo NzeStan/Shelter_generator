@@ -25,7 +25,6 @@ If browser PDF generation is unavailable, open the generated HTML in Chrome or E
 
 | Field | Purpose |
 |---|---|
-| `SHELTER_TYPE` | `gable` for symmetric/gable shelters, `sloped` when windward/leeward ledger loads differ. |
 | `SHELTER_TIED` | Set `yes` only when reactions are transferred to a parent structure. Tie reactions are X/Z only. |
 | `ROOF_LIVE_LOAD_KN_M2` | Roof live load intensity, default template value `0.4 kN/m2` per BS EN 1991-1-1 Clause 6.3.4.1. |
 | `SEAT_LIVE_LOAD_KN_M` | Seat ledger UDL, default template value `0.75 kN/m`. |

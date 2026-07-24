@@ -610,7 +610,7 @@ tr:nth-child(even) td { background: var(--bg-row); }
 {% endif %}
 
 {% if live.seat_line_load_kn_m %}
-<div style="font-size:8.8pt; font-weight:bold; color:var(--navy); margin:10px 0 3px 0; border-bottom:1.2px solid var(--navy-mid); padding-bottom:2px;">Seat Ledger Live Load</div>
+<div style="font-size:8.8pt; font-weight:bold; color:var(--navy); margin:10px 0 3px 0; border-bottom:1.2px solid var(--navy-mid); padding-bottom:2px;">Seat Live Load</div>
 <table style="border:none; margin:4px 0;">
   <tr>
     <td style="border:none; line-height:1.7;">
@@ -812,7 +812,8 @@ tr:nth-child(even) td { background: var(--bg-row); }
   {% if structural.shelter.is_shelter %}
   Total Wind Uplift - Y Axis (WLY) = <strong>{{ structural.wind_loads.total_y }} kN</strong><br/>
   {% endif %}
-  Total Wind Load - Z Axis (WLZ) = <strong>{{ structural.wind_loads.total_z }} kN</strong>
+  Total Wind Load - Z Axis (WLZ) = <strong>{{ structural.wind_loads.total_z }} kN</strong><br/>
+  <em style="font-size:7.8pt; color:var(--muted);">Totals are read from the STAAD output SUMMATION FORCE results for the wind load cases.</em>
 </div>
 
 {% if structural.shelter.is_shelter %}
@@ -902,6 +903,7 @@ tr:nth-child(even) td { background: var(--bg-row); }
   Counterweight demand is taken from the shelter uplift resistance calculation:
   Total Wind Uplift (WLY) minus total scaffold dead load (DL). The required counterweight is then split
   over the nominated anchorage points and converted into concrete block count.
+  <em style="font-size:7.8pt; color:var(--muted); display:block; margin-top:2px;">WLY and DL totals are read from the STAAD output.</em>
 </div>
 <table style="font-size:8.5pt;">
   <thead>
@@ -1134,7 +1136,8 @@ tr:nth-child(even) td { background: var(--bg-row); }
   <strong>Maximum Utilization Ratio = {{ cc.max_ratio }}</strong>
   at Member No. <strong>{{ cc.max_ratio_member }}</strong>,
   Load Combination <strong>{{ cc.max_ratio_lc }}</strong>,
-  Clause <strong>{{ cc.max_ratio_clause }}</strong>.&nbsp;&nbsp;
+  Clause <strong>{{ cc.max_ratio_clause }}</strong>
+  <em style="font-size:7.8pt; color:var(--muted);">(from the STAAD.Pro code-check output)</em>.&nbsp;&nbsp;
   {% if cc.max_ratio < 1.0 %}
     <span class="badge-pass">PASS</span> - All members adequate; UC ratio below unity.
   {% else %}
@@ -1182,7 +1185,9 @@ tr:nth-child(even) td { background: var(--bg-row); }
     <td style="border:none; line-height:1.7;">
       The maximum axial load on scaffold tube members (from STAAD.Pro Connect Edition analysis) is
       <strong>{{ "%.3f"|format(max_axial) }} kN</strong>
-      {% if max_axial_member %}(Member {{ max_axial_member }}, {{ max_axial_type }}){% endif %}.
+      {% if max_axial_member %}(Member {{ max_axial_member }}, {{ max_axial_type }}){% endif %}
+      {% if connection_basis == 'SLS' %}under SLS (unfactored, &gamma;=1.0) — the ULS (&gamma;=1.5) axial load
+      exceeded Class B capacity, so the check falls back to the SLS basis{% else %}under ULS (&gamma;=1.5){% endif %}.
       The required right-angle coupler class is selected from Table C.1 below using the slipping resistance
       limit.<br/>
       Selected coupler class: <strong>{{ connection_class.class }}</strong>
@@ -1221,7 +1226,48 @@ tr:nth-child(even) td { background: var(--bg-row); }
 </table>
 
 {% if top_axial_members %}
-<div class="sub-hdr" style="margin-top:8px;">Member Axial Force Summary (Top {{ [top_axial_members|length, 30]|min }} Horizontal Members — ULS Code Check)</div>
+<div class="sub-hdr" style="margin-top:8px;">Member Axial Force Summary (Top {{ [top_axial_members|length, 30]|min }} Horizontal Members — {{ connection_basis }} Code Check)</div>
+{% if axial_source == 'member_forces' %}
+<table style="font-size:8pt; margin-bottom:6px;">
+  <thead>
+    <tr>
+      <th style="width:22%;">Member</th>
+      <th style="width:22%;">Type</th>
+      <th style="width:22%;">L/C</th>
+      <th style="width:34%; background:var(--gold); color:var(--navy);">Axial Force (kN)</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for m in top_axial_members %}
+    <tr>
+      <td style="text-align:center; font-weight:bold;">{{ m.member }}</td>
+      <td style="text-align:center;">{{ m.type or 'C' }}</td>
+      <td style="text-align:center;">{{ m.lc }}</td>
+      <td style="text-align:center; font-weight:bold; {% if m.axial == max_axial %}background:#D4EDDA;{% endif %}">{{ "%.3f"|format(m.axial) }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% elif connection_basis == 'SLS' %}
+<table style="font-size:8pt; margin-bottom:6px;">
+  <thead>
+    <tr>
+      <th style="width:30%;">Member</th>
+      <th style="width:30%;">Type</th>
+      <th style="width:40%; background:var(--gold); color:var(--navy);">Axial Force (kN)</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for m in top_axial_members %}
+    <tr>
+      <td style="text-align:center; font-weight:bold;">{{ m.member }}</td>
+      <td style="text-align:center;">{{ m.type or 'C' }}</td>
+      <td style="text-align:center; font-weight:bold; {% if m.axial == max_axial %}background:#D4EDDA;{% endif %}">{{ "%.3f"|format(m.axial) }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
 <table style="font-size:8pt; margin-bottom:6px;">
   <thead>
     <tr>
@@ -1248,6 +1294,7 @@ tr:nth-child(even) td { background: var(--bg-row); }
     {% endfor %}
   </tbody>
 </table>
+{% endif %}
 {% endif %}
 
 {% if show_frictional_resistance %}

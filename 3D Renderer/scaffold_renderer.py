@@ -87,6 +87,7 @@ BASE_PLATE_COLOR : str   = "#4E5861" # dark steel
 # Boarded platform
 PLATFORM_THICK   : float = 0.080     # metres (80 mm board thickness)
 PLATFORM_COLOR   : str   = "#C8934A" # amber/timber
+SEAT_COLOR       : str   = "#E63946" # bright red - makes the seat/chair zone easy to spot
 
 # Rendering
 BG_COLOR         : str   = "#FFFFFF" # pure white
@@ -325,11 +326,15 @@ class PlatformParser:
         BOARDED_PLATFORMS:
         # Comment lines and blank lines are ignored
         1,2,3,4
-        10,11,12,13,14
+        seat:10,11,12,13,14
+
+    An optional "category:" prefix (e.g. "seat:", "roof:", "platform:") selects the
+    render colour for that zone; lines without a prefix default to "platform".
     """
 
     def __init__(self, filepath: str | Path):
         self.platforms: list[list[int]] = []
+        self.categories: list[str] = []
         path = Path(filepath)
         if not path.exists():
             print(f"  [WARN] Platform file not found: {filepath}")
@@ -347,10 +352,17 @@ class PlatformParser:
                 continue
             if not stripped or stripped.startswith("#") or stripped.startswith(";"):
                 continue
+            category = "platform"
+            body = stripped
+            if ":" in stripped:
+                prefix, rest = stripped.split(":", 1)
+                if prefix.strip().replace("_", "").isalpha():
+                    category, body = prefix.strip().lower(), rest
             try:
-                ids = [int(x.strip()) for x in stripped.split(",") if x.strip()]
+                ids = [int(x.strip()) for x in body.split(",") if x.strip()]
                 if len(ids) >= 3:
                     self.platforms.append(ids)
+                    self.categories.append(category)
             except ValueError:
                 pass
 
@@ -708,7 +720,8 @@ class ScaffoldRenderer:
 
     def render(
         self,
-        platforms:        list[list[int]] | None = None,
+        platforms:           list[list[int]] | None = None,
+        platform_categories: list[str] | None        = None,
         output_path:      str  | Path            = "scaffold_render.png",
         width:            int                    = RENDER_WIDTH,
         height:           int                    = RENDER_HEIGHT,
@@ -725,6 +738,10 @@ class ScaffoldRenderer:
         ----------
         platforms :
             List of node-ID lists defining boarded platform polygons.
+        platform_categories :
+            Optional category per entry in `platforms` (e.g. "seat", "roof", "platform").
+            The "seat" category renders in SEAT_COLOR so it stands out; everything else
+            (including a missing/shorter list) renders in PLATFORM_COLOR.
         output_path :
             PNG output path.  A matching .jpg is also saved by default.
         width / height :
@@ -751,16 +768,18 @@ class ScaffoldRenderer:
               f"{pipes.n_points:,} pts / {pipes.n_cells:,} cells")
 
         print("─── Building platform geometry ──────────────────────────")
-        plat_meshes: list[pv.PolyData] = []
+        plat_meshes: list[tuple[pv.PolyData, str]] = []
         if platforms:
-            for node_ids in platforms:
+            categories = platform_categories or []
+            for i, node_ids in enumerate(platforms):
                 coords = [self.staad.nodes[nid] for nid in node_ids
                           if nid in self.staad.nodes]
                 if len(coords) < 3:
                     continue
                 m = build_platform_surface(coords)
                 if m is not None:
-                    plat_meshes.append(m)
+                    category = categories[i] if i < len(categories) else "platform"
+                    plat_meshes.append((m, category))
             print(f"    {len(plat_meshes)} platform surface(s) built")
         else:
             print("    (none defined)")
@@ -796,10 +815,10 @@ class ScaffoldRenderer:
         )
 
         # ── Add platform surfaces ──────────────────────────────────────────────
-        for pm in plat_meshes:
+        for pm, category in plat_meshes:
             self.plotter.add_mesh(
                 pm,
-                color=PLATFORM_COLOR,
+                color=SEAT_COLOR if category == "seat" else PLATFORM_COLOR,
                 smooth_shading=True,
                 ambient=AMBIENT,
                 diffuse=DIFFUSE + 0.05,
@@ -990,16 +1009,19 @@ def main(argv=None):
 
     # ── Platform config ───────────────────────────────────────────────────────
     platforms: list[list[int]] = []
+    platform_categories: list[str] = []
     if args.platforms:
         print("\n─── Parsing platform config ─────────────────────────────")
         pp = PlatformParser(args.platforms)
         platforms = pp.platforms
+        platform_categories = pp.categories
         print(f"    {len(platforms)} platform polygon(s) loaded")
 
     # ── Render ────────────────────────────────────────────────────────────────
     renderer = ScaffoldRenderer(staad)
     renderer.render(
-        platforms        = platforms,
+        platforms            = platforms,
+        platform_categories  = platform_categories,
         output_path      = args.output,
         width            = args.width,
         height           = args.height,

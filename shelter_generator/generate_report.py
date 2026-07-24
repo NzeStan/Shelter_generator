@@ -97,8 +97,8 @@ DEFAULTS = {
     'LOCATION':          'TRAIN X',
     'AREA':              'X',
     'SCAFFOLD_TYPE':     'Shelter Scaffold',
+    'SHELTER_USE':       '',
     'LOAD_INTENSITY_KN_M2': '',   # optional override — kN/m²; auto-detected from STAAD LL if blank
-    'SHELTER_TYPE':      'gable',
     'SHELTER_TIED':      'no',
     'ROOF_LIVE_LOAD_KN_M2': '',
     'SEAT_LIVE_LOAD_KN_M': '',
@@ -962,7 +962,6 @@ def _build_shelter_data(project, structural, wind):
     uplift = _shelter_uplift_resistance(project, structural)
     return {
         "is_shelter": True,
-        "type": str(project.get("SHELTER_TYPE") or "gable").strip(),
         "tied": _bool_setting(project.get("SHELTER_TIED"), False),
         "live": live,
         "wind": wind_workings,
@@ -1521,7 +1520,10 @@ def _counterweight_design(project, structural):
 def _brief_description(project, structural, structure_above_ground):
     purpose = str(project.get("PURPOSE") or "the intended work activity").strip()
     scaffold_type = str(project.get("SCAFFOLD_TYPE") or "scaffold").strip()
-    article = _indefinite_article(scaffold_type)
+    shelter_use = str(project.get("SHELTER_USE") or "").strip()
+    shelter_use = shelter_use[:1].upper() + shelter_use[1:] if shelter_use else shelter_use
+    scaffold_type_text = f"{shelter_use} {scaffold_type}".strip() if shelter_use else scaffold_type
+    article = _indefinite_article(scaffold_type_text)
     location_text = str(project.get("LOCATION") or "").strip()
 
     work_order = str(project.get("WORK_ORDER") or "").strip()
@@ -1543,7 +1545,8 @@ def _brief_description(project, structural, structure_above_ground):
     if _is_shelter_project(project):
         components = ["standards", "ledgers", "transoms", "bracing", "roof shelter framing"]
         if has_platforms:
-            components.append("walking platform and seat ledgers")
+            components.append("walking platform")
+            components.append("seat ledgers")
         if structural.get("shelter", {}).get("tied"):
             components.append("support/tie arrangements")
 
@@ -1553,7 +1556,7 @@ def _brief_description(project, structural, structure_above_ground):
         component_text = components[0]
 
     return (
-        f"This document describes the structural design of {article} {scaffold_type} scaffold required for "
+        f"This document describes the structural design of {article} {scaffold_type_text} scaffold required for "
         f"{purpose}{work_order_text}{location_sentence}. "
         f"The scaffold envelope is {structural['dimension_display']} (length x width x height) and "
         f"is configured with {component_text} as indicated on the approved drawing.{height_sentence}"
@@ -1678,6 +1681,87 @@ def _member_node_ids(member_ids, members):
     return ids
 
 
+def _grid_edge_covers(seg, x0, x1, z0, z1, tol=0.05):
+    """True if segment (sx1,sz1,sx2,sz2) runs along one of the 4 boundary edges of
+    the (x0,z0)-(x1,z1) cell, spanning that edge's full length (or more)."""
+    sx1, sz1, sx2, sz2 = seg
+    if abs(sz1 - sz2) < tol and (abs(sz1 - z0) < tol or abs(sz1 - z1) < tol):
+        lo, hi = min(sx1, sx2), max(sx1, sx2)
+        if lo <= x0 + tol and hi >= x1 - tol:
+            return True
+    if abs(sx1 - sx2) < tol and (abs(sx1 - x0) < tol or abs(sx1 - x1) < tol):
+        lo, hi = min(sz1, sz2), max(sz1, sz2)
+        if lo <= z0 + tol and hi >= z1 - tol:
+            return True
+    return False
+
+
+def _detect_grid_quads(member_ids, structural):
+    """Reconstruct boarded-area quads for an irregular or ring-shaped zone (e.g. a
+    perimeter seat bench with an open middle, or a gap where a walkway breaks it) by
+    rasterising the member set onto the grid of X/Z coordinates its own nodes define,
+    then emitting one quad per grid cell that a real member's edge actually borders.
+    An empty cell with an occupied cell on each axis (an implied L-shaped corner, e.g.
+    where a front strip and a side strip meet without their own dedicated corner
+    member) is filled in too. Unlike a single bounding-box quad, this never paints
+    over an area with no real load-bearing member - only 'the part the load covers'."""
+    members = structural.get("members", {})
+    nodes = structural.get("geometry", {}).get("nodes", {})
+
+    seg_by_level = {}
+    for mid in member_ids:
+        mem = members.get(mid)
+        if not mem:
+            continue
+        c1, c2 = nodes.get(mem.get("j1")), nodes.get(mem.get("j2"))
+        if not c1 or not c2:
+            continue
+        y1, y2 = round(c1[1], 1), round(c2[1], 1)
+        if abs(y1 - y2) > 0.1:
+            continue
+        ylevel = round((y1 + y2) / 2, 1)
+        seg_by_level.setdefault(ylevel, []).append((c1[0], c1[2], c2[0], c2[2]))
+
+    quads = []
+    for ylevel, segs in seg_by_level.items():
+        xs = sorted({round(x, 2) for x1, z1, x2, z2 in segs for x in (x1, x2)})
+        zs = sorted({round(z, 2) for x1, z1, x2, z2 in segs for z in (z1, z2)})
+        nx, nz = len(xs) - 1, len(zs) - 1
+
+        occupied = set()
+        for i in range(nx):
+            for j in range(nz):
+                if any(_grid_edge_covers(s, xs[i], xs[i + 1], zs[j], zs[j + 1]) for s in segs):
+                    occupied.add((i, j))
+
+        added = True
+        while added:
+            added = False
+            for i in range(nx):
+                for j in range(nz):
+                    if (i, j) in occupied:
+                        continue
+                    horiz = (i - 1, j) in occupied or (i + 1, j) in occupied
+                    vert = (i, j - 1) in occupied or (i, j + 1) in occupied
+                    if horiz and vert:
+                        occupied.add((i, j))
+                        added = True
+
+        node_xz = {}
+        for nid, coord in nodes.items():
+            if abs(coord[1] - ylevel) < 0.15:
+                node_xz[(round(coord[0], 2), round(coord[2], 2))] = nid
+
+        for (i, j) in occupied:
+            x0, x1, z0, z1 = xs[i], xs[i + 1], zs[j], zs[j + 1]
+            ns = [node_xz.get((x0, z0)), node_xz.get((x1, z0)),
+                  node_xz.get((x1, z1)), node_xz.get((x0, z1))]
+            if all(n is not None for n in ns) and len(set(ns)) == 4:
+                quads.append(ns)
+
+    return quads
+
+
 def _detect_shelter_boarding_quads(project, structural):
     """Whole-area boarded zones for the 3D renderer - one quad for the entire main
     walking-platform area and one for the entire seat-ledger area, plus one quad per
@@ -1688,65 +1772,69 @@ def _detect_shelter_boarding_quads(project, structural):
     members = structural.get("members", {})
     classified = _classify_shelter_live_members(project, structural)
 
-    quads = []
+    quads = []  # list of (category, [node_id, node_id, node_id, node_id])
 
-    for key in ("platform", "seat"):
-        node_ids = _member_node_ids(classified[f"{key}_members"], members)
-        coords = [nodes[n] for n in node_ids if n in nodes]
-        if len(coords) < 4:
-            continue
-        xs = [c[0] for c in coords]
-        zs = [c[2] for c in coords]
-        level_y = sum(c[1] for c in coords) / len(coords)
-        quad = _boarding_quad_corners(node_ids, nodes, min(xs), max(xs), min(zs), max(zs), y_level=level_y)
+    # Main walking platform is a single continuous filled area - one bounding-box quad.
+    platform_node_ids = _member_node_ids(classified["platform_members"], members)
+    platform_coords = [nodes[n] for n in platform_node_ids if n in nodes]
+    if len(platform_coords) >= 4:
+        xs = [c[0] for c in platform_coords]
+        zs = [c[2] for c in platform_coords]
+        level_y = sum(c[1] for c in platform_coords) / len(platform_coords)
+        quad = _boarding_quad_corners(platform_node_ids, nodes, min(xs), max(xs), min(zs), max(zs), y_level=level_y)
         if quad:
-            quads.append(quad)
+            quads.append(("platform", quad))
+
+    # Seat benches typically run around the perimeter with an open middle (and
+    # sometimes a walkway gap) - a single bounding-box quad would wrongly paint over
+    # the open floor, so reconstruct it cell-by-cell from the real seat members instead.
+    for quad in _detect_grid_quads(classified["seat_members"], structural):
+        quads.append(("seat", quad))
 
     roof_node_ids = _member_node_ids(classified["roof_members"], members)
     roof_coords = [nodes[n] for n in roof_node_ids if n in nodes]
     if len(roof_coords) >= 4:
         xs = [c[0] for c in roof_coords]
         zs = [c[2] for c in roof_coords]
-        shelter_type = str(project.get("SHELTER_TYPE") or "gable").strip().lower()
 
+        # The ridge is the roof's highest line of nodes. It runs along whichever plan
+        # axis has the larger spread among the highest-elevation nodes; split the roof
+        # there into its two sloped planes (each still a real-node 4-corner quad). If
+        # that ridge sits at the edge of the footprint rather than inside it, this is
+        # really a single-plane (mono-pitch) roof, not a two-sided gable - skip the
+        # split so it isn't cut into a bogus second sliver. This auto-detects gable vs.
+        # sloped from the actual geometry - no project_info type flag needed.
         split_done = False
-        if "gable" in shelter_type:
-            # The ridge is the roof's highest line of nodes. It runs along whichever plan
-            # axis has the larger spread among the highest-elevation nodes; split the roof
-            # there into its two sloped planes (each still a real-node 4-corner quad). If
-            # that ridge sits at the edge of the footprint rather than inside it, this is
-            # really a single-plane (mono-pitch) roof, not a two-sided gable - skip the
-            # split so it isn't cut into a bogus second sliver.
-            y_top = max(c[1] for c in roof_coords)
-            ridge_nodes = [nodes[n] for n in roof_node_ids
-                           if n in nodes and nodes[n][1] >= y_top - 0.02]
-            rxs = [c[0] for c in ridge_nodes]
-            rzs = [c[2] for c in ridge_nodes]
-            if (max(rxs) - min(rxs)) >= (max(rzs) - min(rzs)):
-                span = max(zs) - min(zs)
-                ridge_z = sum(rzs) / len(rzs)
-                if span > 0 and min(ridge_z - min(zs), max(zs) - ridge_z) > 0.1 * span:
-                    for z0, z1 in ((min(zs), ridge_z), (ridge_z, max(zs))):
-                        quad = _boarding_quad_corners(roof_node_ids, nodes, min(xs), max(xs), z0, z1)
-                        if quad:
-                            quads.append(quad)
-                    split_done = True
-            else:
-                span = max(xs) - min(xs)
-                ridge_x = sum(rxs) / len(rxs)
-                if span > 0 and min(ridge_x - min(xs), max(xs) - ridge_x) > 0.1 * span:
-                    for x0, x1 in ((min(xs), ridge_x), (ridge_x, max(xs))):
-                        quad = _boarding_quad_corners(roof_node_ids, nodes, x0, x1, min(zs), max(zs))
-                        if quad:
-                            quads.append(quad)
-                    split_done = True
+        y_top = max(c[1] for c in roof_coords)
+        ridge_nodes = [nodes[n] for n in roof_node_ids
+                       if n in nodes and nodes[n][1] >= y_top - 0.02]
+        rxs = [c[0] for c in ridge_nodes]
+        rzs = [c[2] for c in ridge_nodes]
+        if (max(rxs) - min(rxs)) >= (max(rzs) - min(rzs)):
+            span = max(zs) - min(zs)
+            ridge_z = sum(rzs) / len(rzs)
+            if span > 0 and min(ridge_z - min(zs), max(zs) - ridge_z) > 0.1 * span:
+                for z0, z1 in ((min(zs), ridge_z), (ridge_z, max(zs))):
+                    quad = _boarding_quad_corners(roof_node_ids, nodes, min(xs), max(xs), z0, z1)
+                    if quad:
+                        quads.append(("roof", quad))
+                split_done = True
+        else:
+            span = max(xs) - min(xs)
+            ridge_x = sum(rxs) / len(rxs)
+            if span > 0 and min(ridge_x - min(xs), max(xs) - ridge_x) > 0.1 * span:
+                for x0, x1 in ((min(xs), ridge_x), (ridge_x, max(xs))):
+                    quad = _boarding_quad_corners(roof_node_ids, nodes, x0, x1, min(zs), max(zs))
+                    if quad:
+                        quads.append(("roof", quad))
+                split_done = True
 
         if not split_done:
             quad = _boarding_quad_corners(roof_node_ids, nodes, min(xs), max(xs), min(zs), max(zs))
             if quad:
-                quads.append(quad)
+                quads.append(("roof", quad))
 
-    return [_order_quad_ccw(q, nodes) for q in quads]
+    return [(category, _order_quad_ccw(quad, nodes)) for category, quad in quads]
 
 
 def _write_platforms_txt(project, structural):
@@ -1756,7 +1844,9 @@ def _write_platforms_txt(project, structural):
         print("  Platforms : no live-load zones detected; keeping existing platforms.txt")
         return
     try:
-        lines = ["#BOARDED_PLATFORMS:"] + [','.join(str(n) for n in q) for q in quads]
+        lines = ["#BOARDED_PLATFORMS:"] + [
+            f"{category}:{','.join(str(n) for n in quad)}" for category, quad in quads
+        ]
         platforms_path.write_text('\n'.join(lines) + '\n', encoding='utf-8')
         print(f"  Platforms : auto-detected {len(quads)} zone(s) -> platforms.txt")
     except Exception as exc:
@@ -2532,36 +2622,129 @@ def main():
     nodes_coord = structural.get('geometry', {}).get('nodes', {})
 
     def _is_horizontal(member_id):
-        """True when member runs primarily in X-Z plane (ledger/transom), not Y (standard)."""
+        """True only for genuine ledgers/transoms: level (Y is effectively constant
+        along the member) and a real coupler-jointed tube length. A simple 'run exceeds
+        rise' test also catches sloped roof rafters/purlins (any incline where the
+        horizontal run is bigger than the rise still passes) and tiny sub-100mm mesh
+        segments within the roof framing, both of which can carry disproportionate axial
+        force and are not couplers this check applies to."""
         m = members_dict.get(member_id)
         if not m:
             return True
         n1, n2 = nodes_coord.get(m['j1']), nodes_coord.get(m['j2'])
         if not n1 or not n2:
             return True
-        dy = abs(n2[1] - n1[1])
-        dx, dz = abs(n2[0] - n1[0]), abs(n2[2] - n1[2])
-        return (dx * dx + dz * dz) > dy * dy
+        if m.get('length_mm', 0.0) < 300:
+            return False
+        return abs(n2[1] - n1[1]) < 0.01
 
-    horiz_members = [m for m in cc.get('members', []) if _is_horizontal(m['member'])]
-    if horiz_members:
-        best_horiz = max(horiz_members, key=lambda m: m['axial'])
-        auto_axial        = best_horiz['axial']
-        auto_axial_member = best_horiz['member']
-        auto_axial_type   = best_horiz.get('type', 'C')
-    else:
-        auto_axial        = cc['max_axial']
-        auto_axial_member = cc['max_axial_member']
-        auto_axial_type   = cc['max_axial_type']
+    # Prefer the real per-member, per-load-case axial force (from a STAAD 'PRINT MEMBER
+    # FORCES' table) over the STAAD steel code-check block: the code-check axial is tied
+    # to whichever load case governs that member's bending/combined-stress UC ratio, not
+    # necessarily the load case with the largest raw axial force - which is what actually
+    # matters for a coupler slipping check. Falls back to the code-check block's axial for
+    # projects that don't have a member-forces table.
+    member_forces = structural.get('member_forces') or {}
+    combos = structural.get('load_combinations', [])
+    uls_lc_numbers = {c['number'] for c in combos if str(c.get('title', '')).strip().upper().startswith('ULS')}
+    sls_lc_numbers = {c['number'] for c in combos if str(c.get('title', '')).strip().upper().startswith('SLS')}
 
+    def _peak_axial(per_load, lc_numbers):
+        """(abs_axial, signed_axial, load_case) of the largest-magnitude axial among
+        the given load cases, or None if none apply."""
+        candidates = [(abs(v), v, lc) for lc, v in per_load.items() if lc in lc_numbers]
+        return max(candidates, key=lambda t: t[0]) if candidates else None
+
+    axial_source = 'member_forces' if member_forces and uls_lc_numbers else 'code_check'
+
+    if axial_source == 'member_forces':
+        uls_rows = []
+        for mid, per_load in member_forces.items():
+            if not _is_horizontal(mid):
+                continue
+            peak = _peak_axial(per_load, uls_lc_numbers)
+            if peak is None:
+                continue
+            abs_v, signed_v, lc = peak
+            uls_rows.append({'member': mid, 'axial': round(abs_v, 3), 'type': 'C' if signed_v < 0 else 'T', 'lc': lc})
+        uls_rows.sort(key=lambda r: r['axial'], reverse=True)
+
+        if uls_rows:
+            best = uls_rows[0]
+            auto_axial, auto_axial_member, auto_axial_type = best['axial'], best['member'], best['type']
+            top_axial_members = uls_rows[:30]
+        else:
+            axial_source = 'code_check'  # no horizontal members had member-forces data
+
+    if axial_source == 'code_check':
+        horiz_members = [m for m in cc.get('members', []) if _is_horizontal(m['member'])]
+        if horiz_members:
+            best_horiz = max(horiz_members, key=lambda m: m['axial'])
+            auto_axial        = best_horiz['axial']
+            auto_axial_member = best_horiz['member']
+            auto_axial_type   = best_horiz.get('type', 'C')
+        else:
+            auto_axial        = cc['max_axial']
+            auto_axial_member = cc['max_axial_member']
+            auto_axial_type   = cc['max_axial_type']
+        top_axial_members = sorted(horiz_members if horiz_members else cc.get('members', []),
+                                   key=lambda m: m['axial'], reverse=True)[:30]
+
+    # Manual override (mirrors the deflection-check pattern): auto-computed above from
+    # the STAAD output; override only if that computation can't be trusted for a project.
+    override_axial = _optional_float(project.get('MAX_AXIAL_KN'))
+    if override_axial is not None:
+        auto_axial        = override_axial
+        auto_axial_member = _optional_float(project.get('MAX_AXIAL_MEMBER')) or auto_axial_member
+        auto_axial_type   = (project.get('MAX_AXIAL_TYPE') or auto_axial_type or 'C').strip().upper()
+        axial_source      = 'manual'
+        top_axial_members = [{
+            'member': auto_axial_member, 'type': auto_axial_type,
+            'axial': round(override_axial, 3), 'lc': project.get('MAX_AXIAL_LC') or '',
+        }]
+
+    # Check ULS first; if the coupler class fails under ULS, fall back to SLS (unfactored,
+    # gamma=1.0 — see Load Combinations legend).
+    connection_basis = 'ULS'
     max_axial        = auto_axial
     max_axial_member = str(auto_axial_member or '')
     max_axial_type   = auto_axial_type
     connection_class = _connection_class(max_axial)
 
-    # Top 30 horizontal members by axial force for the connection check table
-    top_axial_members = sorted(horiz_members if horiz_members else cc.get('members', []),
-                               key=lambda m: m['axial'], reverse=True)[:30]
+    override_sls_axial = _optional_float(project.get('MAX_AXIAL_SLS_KN'))
+    if connection_class['status'] == 'FAIL':
+        connection_basis = 'SLS'
+        if override_sls_axial is not None:
+            max_axial = round(override_sls_axial, 3)
+            top_axial_members = [{**top_axial_members[0], 'axial': max_axial}] if top_axial_members else []
+        elif axial_source == 'member_forces':
+            # Look up the SAME governing member's real SLS-combo axial directly - exact,
+            # no unfactoring needed.
+            peak = _peak_axial(member_forces.get(auto_axial_member, {}), sls_lc_numbers)
+            if peak is not None:
+                abs_v, signed_v, lc = peak
+                max_axial, max_axial_type = round(abs_v, 3), 'C' if signed_v < 0 else 'T'
+
+            sls_rows = []
+            for row in top_axial_members:
+                peak = _peak_axial(member_forces.get(row['member'], {}), sls_lc_numbers)
+                if peak is not None:
+                    abs_v, signed_v, lc = peak
+                    sls_rows.append({'member': row['member'], 'axial': round(abs_v, 3),
+                                      'type': 'C' if signed_v < 0 else 'T', 'lc': lc})
+                else:
+                    sls_rows.append({**row, 'axial': round(row['axial'] / 1.5, 3)})
+            sls_rows.sort(key=lambda r: r['axial'], reverse=True)
+            top_axial_members = sls_rows
+        else:
+            # Legacy path (no member-forces table): SLS force = ULS force / 1.5, since
+            # every ULS combo here is the same SLS combo at 1.5x - an exact unfactoring.
+            max_axial = round(auto_axial / 1.5, 3)
+            top_axial_members = [
+                {**m, 'axial': round(m['axial'] / 1.5, 3)}
+                for m in top_axial_members
+            ]
+        connection_class = _connection_class(max_axial)
 
     # -- Deflection values (auto from .out file; project_info keys are optional overrides) --
     max_vert_mm   = _float(project.get('MAX_VERT_DISP_MM'),  d['max_vertical_mm'])
@@ -2611,6 +2794,8 @@ def main():
         max_axial_member = max_axial_member,
         max_axial_type   = max_axial_type,
         connection_class  = connection_class,
+        connection_basis  = connection_basis,
+        axial_source      = axial_source,
         top_axial_members = top_axial_members,
         max_vert_mm      = max_vert_mm,
         max_vert_lc      = max_vert_lc,

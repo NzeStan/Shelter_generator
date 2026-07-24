@@ -2,8 +2,8 @@
 # Lines starting with # are ignored. Format: KEY: value
 
 # Document
-DOCUMENT_NO:         PMS-WA-ARCO-050
-SCAFFOLD_DRAWING_NO: PMS-WA-ARCO-050
+DOCUMENT_NO:         PMS-WA-ARCO-043
+SCAFFOLD_DRAWING_NO: PMS-WA-ARCO-043
 REVISION:            0
 
 # Integrated outputs
@@ -21,11 +21,13 @@ COUNTERWEIGHT_ADOPTED_TONNES:
 COUNTERWEIGHT_PIVOT_NODES:
 
 # Shelter location and type
-LOCATION:            Jetty-1
-AREA:                B
-SCAFFOLD_TYPE:       Shelter Scaffold
-# SHELTER_TYPE options: gable, sloped
-SHELTER_TYPE:        gable
+LOCATION:            GTG-4007
+AREA:                A
+SCAFFOLD_TYPE:       Shelter
+# Optional descriptor for the shelter's designated use, e.g. Security, Rest, Smoking.
+# Inserted before SCAFFOLD_TYPE in the brief description (e.g. "a Security Shelter
+# Scaffold scaffold required for..."). Leave blank for no qualifier.
+SHELTER_USE: rest
 # Set to yes only when the shelter is tied to a parent structure.
 SHELTER_TIED:        no
 RISK_LEVEL:          Medium
@@ -40,14 +42,14 @@ PLATFORM_LIVE_LOAD_KN_M2:  1.5
 
 # Legacy scaffold SWL override. Leave blank for shelter reports unless a fallback is needed.
 LOAD_INTENSITY_KN_M2:
-CATEGORY_1_ASSURANCE_NOTE: yes
+CATEGORY_1_ASSURANCE_NOTE: no
 
 # Uplift resistance / counterweight inputs
 UPLIFT_RESISTANCE_ENABLED: yes
 # Optional overrides. Leave blank to use STAAD output totals for WLY and DL.
 UPLIFT_TOTAL_WLY_KN:
 UPLIFT_DEAD_LOAD_KN:
-UPLIFT_ANCHORAGE_POINTS:   4
+UPLIFT_ANCHORAGE_POINTS:   6
 CONCRETE_BLOCK_LENGTH_M:   0.6
 CONCRETE_BLOCK_WIDTH_M:    0.4
 CONCRETE_BLOCK_HEIGHT_M:   0.3
@@ -61,7 +63,7 @@ TIE_FORCE_FX:
 TIE_FORCE_FZ:
 
 PERMIT_NO:
-ERMT_NO:             PIC/PMS/26/2714
+ERMT_NO:             PIC/PMS/26/2842
 
 # Personnel
 DESIGNED_BY_ID:      PMS/C3-1141
@@ -78,18 +80,30 @@ PREPARED_BY_NAME:
 
 # Job details
 WORK_ORDER:
-PURPOSE:             maintenance
+PURPOSE:             turnaround activities 
 STRUCTURE_ABOVE_GROUND_M:
 WIND_CALC_HEIGHT_M:
 DOC_LIFE:            3 Years
 
 # Deflection Check - auto-extracted from .out file SLS combination results.
 # Override only if auto-extraction fails:
-MAX_VERT_DISP_MM:
-MAX_VERT_DISP_LC:
-MAX_HORIZ_DISP_MM:
-MAX_HORIZ_DISP_LC:
+MAX_VERT_DISP_MM:0.612
+MAX_VERT_DISP_LC: 6
+MAX_HORIZ_DISP_MM:0.707
+MAX_HORIZ_DISP_LC:7
 # Member ID whose length defines the span L for deflection limits (optional).
 # If blank, the member connected to the critical-displacement node is used automatically.
-MAX_VERT_MEMBER:
-MAX_HORIZ_MEMBER:
+MAX_VERT_MEMBER:2060
+MAX_HORIZ_MEMBER:30
+
+# Connection Stability Check (coupler slipping) - auto-computed from the STAAD member
+# forces output (peak axial force among horizontal ledgers/transoms over the ULS load
+# cases, then the SLS load cases if the ULS check fails Class B).
+# Override only if the automatic computation can't be trusted for this project:
+MAX_AXIAL_KN:
+MAX_AXIAL_MEMBER:
+MAX_AXIAL_TYPE:
+MAX_AXIAL_LC:
+# Optional separate override for the SLS fallback value (only used if the ULS check,
+# using MAX_AXIAL_KN above, fails). Leave blank to compute it automatically.
+MAX_AXIAL_SLS_KN:
