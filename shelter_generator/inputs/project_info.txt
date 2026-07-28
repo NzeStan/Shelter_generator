@@ -87,13 +87,13 @@ DOC_LIFE:            3 Years
 
 # Deflection Check - auto-extracted from .out file SLS combination results.
 # Override only if auto-extraction fails:
-MAX_VERT_DISP_MM:0.772
-MAX_VERT_DISP_LC: 7
-MAX_HORIZ_DISP_MM:0.790
+MAX_VERT_DISP_MM:0.760
+MAX_VERT_DISP_LC: 10
+MAX_HORIZ_DISP_MM:0.811
 MAX_HORIZ_DISP_LC:7
 # Member ID whose length defines the span L for deflection limits (optional).
 # If blank, the member connected to the critical-displacement node is used automatically.
-MAX_VERT_MEMBER:431
+MAX_VERT_MEMBER:861
 MAX_HORIZ_MEMBER:30
 
 # Connection Stability Check (coupler slipping) - auto-computed from the STAAD member

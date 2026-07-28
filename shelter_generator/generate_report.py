@@ -393,12 +393,16 @@ def _live_member_geometry(member_id, structural):
 
     dx = abs(p2[0] - p1[0])
     dz = abs(p2[2] - p1[2])
-    if dx < 1e-6 and dz < 1e-6:
+    if dx < 1e-3 and dz < 1e-3:
         # Purely vertical member (a standard lift segment) - no horizontal run at all,
-        # so neither X nor Z is naturally "the" perpendicular coordinate. Report both;
-        # _resolve_vertical_tributary_axis decides per load case which one actually
-        # varies across sibling standards (e.g. a row of standards along one wall face
-        # varies in X at a constant Z) and fills in a usable perp_coord from that.
+        # so neither X nor Z is naturally "the" perpendicular coordinate. Tolerance is
+        # 1mm, not exact-zero: STAAD node coordinates carry their own rounding noise
+        # (e.g. 4.80001 vs 4.8), and comparing against an exact-zero threshold silently
+        # misclassified a standard as a sloped/horizontal member instead, dropping it out
+        # of its own grid and throwing off its neighbours' bay-width calculation. Report
+        # both X and Z; _resolve_vertical_tributary_axis decides per load case which one
+        # actually varies across sibling standards (e.g. a row of standards along one
+        # wall face varies in X at a constant Z) and fills in a usable perp_coord.
         return {
             "axis": "VERTICAL",
             "y_mid": round((p1[1] + p2[1]) / 2.0, 3),
@@ -424,7 +428,15 @@ def _resolve_vertical_tributary_axis(member_entries):
     from. Per load case, check whether their sibling standards actually vary in X or in
     Z (e.g. a row of standards along one wall face varies in X at a fixed Z) and use
     whichever one varies as the tributary-spacing coordinate, same as a real horizontal
-    member's perp_coord."""
+    member's perp_coord.
+
+    That choice is made once per load case, but a wind case can load standards on more
+    than one wall line (e.g. a front wall and a return wall), each with its own spacing.
+    Comparing every standard's X position against every other regardless of which wall
+    it's actually on mixes unrelated bay spacings together. So the *other* coordinate -
+    the one that's supposed to be fixed for a given wall - is folded into the elevation
+    key, keeping each wall's standards grouped only against their own real neighbours.
+    """
     by_case = {}
     for entry in member_entries:
         geom = entry.get("geometry")
@@ -438,6 +450,7 @@ def _resolve_vertical_tributary_axis(member_entries):
         for g in geoms:
             g["axis"] = "V"
             g["perp_coord"] = g["x"] if use_x else g["z"]
+            g["y_mid"] = (g["y_mid"], g["z"] if use_x else g["x"])
 
 
 def _assign_tributary_widths(member_entries, group_by_elevation=True):
