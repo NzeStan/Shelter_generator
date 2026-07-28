@@ -393,6 +393,18 @@ def _live_member_geometry(member_id, structural):
 
     dx = abs(p2[0] - p1[0])
     dz = abs(p2[2] - p1[2])
+    if dx < 1e-6 and dz < 1e-6:
+        # Purely vertical member (a standard lift segment) - no horizontal run at all,
+        # so neither X nor Z is naturally "the" perpendicular coordinate. Report both;
+        # _resolve_vertical_tributary_axis decides per load case which one actually
+        # varies across sibling standards (e.g. a row of standards along one wall face
+        # varies in X at a constant Z) and fills in a usable perp_coord from that.
+        return {
+            "axis": "VERTICAL",
+            "y_mid": round((p1[1] + p2[1]) / 2.0, 3),
+            "x": round((p1[0] + p2[0]) / 2.0, 3),
+            "z": round((p1[2] + p2[2]) / 2.0, 3),
+        }
     if dx >= dz:
         axis = "X"
         perp_idx = 2
@@ -405,6 +417,27 @@ def _live_member_geometry(member_id, structural):
         "y_mid": round((p1[1] + p2[1]) / 2.0, 3),
         "perp_coord": round((p1[perp_idx] + p2[perp_idx]) / 2.0, 3),
     }
+
+
+def _resolve_vertical_tributary_axis(member_entries):
+    """Vertical standards have no run direction to derive a perpendicular coordinate
+    from. Per load case, check whether their sibling standards actually vary in X or in
+    Z (e.g. a row of standards along one wall face varies in X at a fixed Z) and use
+    whichever one varies as the tributary-spacing coordinate, same as a real horizontal
+    member's perp_coord."""
+    by_case = {}
+    for entry in member_entries:
+        geom = entry.get("geometry")
+        if geom and geom.get("axis") == "VERTICAL":
+            by_case.setdefault(entry["load_case"], []).append(geom)
+
+    for geoms in by_case.values():
+        xs = {g["x"] for g in geoms}
+        zs = {g["z"] for g in geoms}
+        use_x = len(xs) >= len(zs)
+        for g in geoms:
+            g["axis"] = "V"
+            g["perp_coord"] = g["x"] if use_x else g["z"]
 
 
 def _assign_tributary_widths(member_entries, group_by_elevation=True):
@@ -730,6 +763,7 @@ def _shelter_member_rows(entries, structural, intensity, group_by_elevation=True
         }
         for entry in entries
     ]
+    _resolve_vertical_tributary_axis(member_entries)
     _assign_tributary_widths(member_entries, group_by_elevation=group_by_elevation)
 
     grouped = {}
