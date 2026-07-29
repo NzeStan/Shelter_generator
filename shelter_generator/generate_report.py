@@ -1567,6 +1567,7 @@ def _counterweight_design(project, structural):
 def _brief_description(project, structural, structure_above_ground):
     purpose = str(project.get("PURPOSE") or "the intended work activity").strip()
     scaffold_type = str(project.get("SCAFFOLD_TYPE") or "scaffold").strip()
+    scaffold_type = scaffold_type[:1].lower() + scaffold_type[1:] if scaffold_type else scaffold_type
     shelter_use = str(project.get("SHELTER_USE") or "").strip()
     shelter_use = shelter_use[:1].upper() + shelter_use[1:] if shelter_use else shelter_use
     scaffold_type_text = f"{shelter_use} {scaffold_type}".strip() if shelter_use else scaffold_type
@@ -1574,7 +1575,7 @@ def _brief_description(project, structural, structure_above_ground):
     location_text = str(project.get("LOCATION") or "").strip()
 
     work_order = str(project.get("WORK_ORDER") or "").strip()
-    work_order_text = f" under work order {work_order}" if work_order else ""
+    work_order_text = f" under Work Order {work_order}" if work_order else ""
     location_sentence = f" at {location_text}" if location_text else ""
     height_sentence = f" The structure is {structure_above_ground}m above ground level." if structure_above_ground else ""
 
