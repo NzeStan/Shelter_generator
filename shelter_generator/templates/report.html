@@ -181,6 +181,9 @@ tr:nth-child(even) td { background: var(--bg-row); }
       <td colspan="2" style="border:1px solid var(--border); padding:7px 12px;"><span style="font-weight:bold; color:var(--navy);">SCAFFOLD DRAWING No:</span> {{ project.SCAFFOLD_DRAWING_NO }}</td>
     </tr>
     <tr>
+      <td colspan="2" style="border:1px solid var(--border); padding:7px 12px;"><span style="font-weight:bold; color:var(--navy);">CATEGORY:</span> {% if show_assurance_note %}Category 1 Engineered Scaffold{% else %}Category 2 Engineered Scaffold{% endif %}</td>
+    </tr>
+    <tr>
       <td colspan="2" style="border:1px solid var(--border); padding:7px 12px;">
         <strong style="color:var(--navy);">RISK CLASSIFICATION:</strong>&nbsp;&nbsp;
         {% set r = project.RISK_LEVEL | upper %}
@@ -284,10 +287,12 @@ tr:nth-child(even) td { background: var(--bg-row); }
         ('REVIEWED BY', project.REVIEWED_BY_ID, project.REVIEWED_BY_NAME),
         ('APPROVED BY', project.APPROVED_BY_ID, project.APPROVED_BY_NAME),
       ] %}
+      {% if (pid and pid.strip()) or (name and name.strip()) %}
       <tr>
         <td style="font-weight:bold; color:var(--navy-mid);">{{ role }}</td>
         <td>{{ pid }}</td><td>{{ name }}</td><td class="signature-cell"></td><td class="date-cell"></td>
       </tr>
+      {% endif %}
       {% endfor %}
     </tbody>
   </table>

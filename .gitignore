@@ -2,3 +2,18 @@
 scafold_generator_reference
 output
 images
+
+# Generated engineering drawings (reproducible from staad_command.txt via generate_report.py)
+2D_3D_GENERATOR/pdf_output/
+2D_3D_GENERATOR/dxf_output/
+2D_3D_GENERATOR/title_block_values.txt
+
+# Auto-detected platform boarding zones (reproducible from staad_command.txt)
+3D Renderer/platforms.txt
+
+# Python bytecode cache
+__pycache__/
+*.pyc
+
+# Local Claude Code tooling config
+.claude/
