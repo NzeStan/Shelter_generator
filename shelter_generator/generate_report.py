@@ -758,7 +758,8 @@ def _member_group_summary(member_ids, structural):
     }
 
 
-def _shelter_member_rows(entries, structural, intensity, group_by_elevation=True):
+def _shelter_member_rows(entries, structural, intensity, group_by_elevation=True,
+                          force_backderive_intensity=False):
     """Build Edge/Interior tributary-width rows for a shelter load category (platform, roof,
     or wind face). Mirrors the reference _platform_live_workings presentation - Member /
     Tributary Width (with working) / Load Intensity / Member Load - but collapses everything
@@ -766,7 +767,14 @@ def _shelter_member_rows(entries, structural, intensity, group_by_elevation=True
     numerous. group_by_elevation=False ignores the Y level when grouping neighbours - needed
     for sloped/gable roof (and roof-uplift) members that never share an exact Y level; flat
     levels (main platform, wind ledger rows) keep elevation grouping so unrelated rows can't
-    contaminate each other's tributary-width calculation."""
+    contaminate each other's tributary-width calculation.
+
+    force_backderive_intensity=True ignores the passed `intensity` for display purposes and
+    always reads the real per-row pressure back from (line load / tributary width) instead -
+    needed when the same wind case applies a different pressure at each scaffold lift height
+    (EN 1991-1-4 qp(z) varying with elevation) rather than one pressure for the whole
+    structure. `intensity` is still used as the last-resort tributary-width estimate for any
+    row whose geometric neighbours can't be found."""
     member_entries = [
         {
             "load_case": entry.get("load_case", 0),
@@ -804,9 +812,12 @@ def _shelter_member_rows(entries, structural, intensity, group_by_elevation=True
 
     rows = []
     for row in grouped.values():
-        load_intensity = intensity if intensity else (
-            row["line_load_kn_m"] / row["tributary_width_m"] if row["tributary_width_m"] else row["line_load_kn_m"]
-        )
+        if force_backderive_intensity and row["tributary_width_m"]:
+            load_intensity = row["line_load_kn_m"] / row["tributary_width_m"]
+        else:
+            load_intensity = intensity if intensity else (
+                row["line_load_kn_m"] / row["tributary_width_m"] if row["tributary_width_m"] else row["line_load_kn_m"]
+            )
         row["load_intensity_kn_m2"] = round(load_intensity, 3)
         row.pop("count")
         row["member_display"] = f"{row['member_role']} Members"
@@ -816,9 +827,12 @@ def _shelter_member_rows(entries, structural, intensity, group_by_elevation=True
         )
         rows.append(row)
 
-    # Different elevation rows (e.g. separate wind ledger levels) can independently produce
-    # the same real bay width/load - one row's neighbours may resolve to Edge/Interior while
-    # another falls back to "Loaded". Merge duplicates so the same bay isn't shown twice.
+    # Different rows (e.g. mirrored "(A + B)" vs "(B + A)" interior spans, or separate wind
+    # ledger levels in the non-height-varying case) can independently produce the same real
+    # bay width/load - one row's neighbours may resolve to Edge/Interior while another falls
+    # back to "Loaded". Merge duplicates so the same bay isn't shown twice; a genuinely
+    # different pressure tier already has a different real load, so this never merges across
+    # tiers even when pressure varies by height.
     consolidated = {}
     for row in rows:
         key = (round(row["tributary_width_m"], 3), round(row["line_load_kn_m"], 3))
@@ -827,7 +841,12 @@ def _shelter_member_rows(entries, structural, intensity, group_by_elevation=True
             consolidated[key] = row
     rows = list(consolidated.values())
 
-    rows.sort(key=lambda r: (0 if r["member_role"] == "Edge" else 1, r["tributary_width_m"], r["line_load_kn_m"]))
+    if force_backderive_intensity:
+        # Group visually by pressure tier (low to high) before role/width, since that's
+        # what distinguishes one scaffold lift's rows from the next here.
+        rows.sort(key=lambda r: (r["load_intensity_kn_m2"], 0 if r["member_role"] == "Edge" else 1, r["tributary_width_m"]))
+    else:
+        rows.sort(key=lambda r: (0 if r["member_role"] == "Edge" else 1, r["tributary_width_m"], r["line_load_kn_m"]))
     return rows
 
 
@@ -908,6 +927,95 @@ def _shelter_live_workings(project, structural):
     }
 
 
+def _wind_pressure_varies_by_height(entries, structural):
+    """True if members at the same plan position carry different pressure at different
+    heights - an EN 1991-1-4 qp(z) pressure schedule evaluated separately per scaffold
+    lift - rather than one pressure applied uniformly regardless of elevation."""
+    member_entries = [
+        {
+            "load_case": e.get("load_case", 0),
+            "member_id": e["member_id"],
+            "line_load_kn_m": e["line_load_kn_m"],
+            "geometry": _live_member_geometry(e["member_id"], structural),
+        }
+        for e in entries
+    ]
+    _resolve_vertical_tributary_axis(member_entries)
+
+    groups = {}
+    for entry in member_entries:
+        geom = entry.get("geometry")
+        if not geom:
+            continue
+        key = (entry["load_case"], geom["axis"], geom.get("perp_coord"))
+        groups.setdefault(key, set()).add((geom["y_mid"], round(entry["line_load_kn_m"], 3)))
+
+    for pairs in groups.values():
+        if len({y for y, _ in pairs}) >= 2 and len({v for _, v in pairs}) >= 2:
+            return True
+    return False
+
+
+def _solve_wind_reference_height(target_qw, cf, lo=0.1, hi=200.0, tol=1e-6):
+    """Invert qp(z) x Cf = target_qw for z by bisection - qp(z) increases monotonically
+    with z (EN 1991-1-4), so this recovers the exact reference height a qw value was
+    computed at, the same way solving x from y = f(x) recovers x for any monotonic f."""
+    def qw_at(z):
+        return WindCalculator(z).calculate()['qp_knm2'] * cf
+    for _ in range(60):
+        mid = (lo + hi) / 2.0
+        if qw_at(mid) < target_qw:
+            lo = mid
+        else:
+            hi = mid
+        if hi - lo < tol:
+            break
+    return round((lo + hi) / 2.0, 3)
+
+
+def _wind_pressure_tiers(row_lists, cf, gap=0.05):
+    """Some projects don't use one wind pressure for the whole structure - they evaluate
+    EN 1991-1-4's qp(z) at several reference heights (each measured from ground zero, not
+    from the previous lift) and apply the resulting pressure to the standard segments in
+    that band. The real per-row pressures already back-derived by _shelter_member_rows are
+    literally qp(z) x Cf for whichever z was used - so instead of guessing which STAAD node
+    elevation was "the" reference height (the real segment boundaries rarely line up with
+    it, e.g. a sloped roof chops the top lift into odd sub-lengths), solve for z directly:
+    invert the same EN 1991-1-4 formula this report already uses everywhere else.
+
+    Distinct rows belonging to the same real tier differ only by rounding noise (dividing
+    slightly different real loads by slightly different tributary widths), so nearby qw
+    values are clustered together (gap-based) before solving, rather than solving each row
+    independently and risking two near-identical results that round to different heights.
+
+    Returns (lookup, tiers): `lookup` maps a row's own rounded load_intensity_kn_m2 to
+    (reference_height_m, tier_qw) for annotating individual rows; `tiers` is the sorted
+    list of (reference_height_m, tier_qw) for the summary table.
+    """
+    qws = sorted({round(r["load_intensity_kn_m2"], 3) for rows in row_lists for r in rows})
+    if not qws:
+        return {}, []
+
+    clusters = [[qws[0]]]
+    for q in qws[1:]:
+        if q - clusters[-1][-1] <= gap:
+            clusters[-1].append(q)
+        else:
+            clusters.append([q])
+
+    lookup = {}
+    tiers = []
+    for cluster in clusters:
+        tier_qw = round(sum(cluster) / len(cluster), 3)
+        z = _solve_wind_reference_height(tier_qw, cf)
+        tiers.append((z, tier_qw))
+        for q in cluster:
+            lookup[q] = (z, tier_qw)
+
+    tiers.sort()
+    return lookup, tiers
+
+
 def _shelter_wind_pressure(wind):
     """Shelter design wind pressure qw = qp x Cf, generated entirely from the EN 1991-1-4
     calculation (wind.qp_knm2, wind.cf) - never overridden from project_info."""
@@ -916,7 +1024,7 @@ def _shelter_wind_pressure(wind):
     return pressure
 
 
-def _shelter_wind_workings(structural, wind_pressure):
+def _shelter_wind_workings(structural, wind_pressure, cf):
     """Wind load application on shelter members, presented per face (WLX, WLZ) plus roof
     uplift (WLY), using the same Edge/Interior tributary-width presentation as live loads."""
     lateral_entries = {"X": [], "Z": []}
@@ -937,10 +1045,36 @@ def _shelter_wind_workings(structural, wind_pressure):
             elif direction in lateral_entries:
                 lateral_entries[direction].extend(entries)
 
+    # Some projects evaluate qp(z) separately at each scaffold lift height (EN 1991-1-4
+    # pressure genuinely increasing with elevation), each reference height measured from
+    # ground zero, instead of applying one pressure for the whole structure - detect that
+    # automatically from the real STAAD loads rather than requiring a project_info flag.
+    height_varying = (
+        _wind_pressure_varies_by_height(lateral_entries["X"], structural)
+        or _wind_pressure_varies_by_height(lateral_entries["Z"], structural)
+    )
+
+    wind_x_rows = _shelter_member_rows(lateral_entries["X"], structural, wind_pressure,
+                                        group_by_elevation=True, force_backderive_intensity=height_varying)
+    wind_z_rows = _shelter_member_rows(lateral_entries["Z"], structural, wind_pressure,
+                                        group_by_elevation=True, force_backderive_intensity=height_varying)
+
+    height_bands = []
+    if height_varying:
+        # Only annotate each row with which reference height it belongs to - never touch
+        # its own load_intensity_kn_m2, which must stay the exact value line_load was
+        # divided by so "Load Intensity x Tributary Width = Member Load" keeps reconciling.
+        lookup, height_bands = _wind_pressure_tiers([wind_x_rows, wind_z_rows], cf)
+        for row in wind_x_rows + wind_z_rows:
+            z, _tier_qw = lookup.get(round(row["load_intensity_kn_m2"], 3), (None, None))
+            row["reference_height_m"] = z
+
     return {
-        "wind_x_rows": _shelter_member_rows(lateral_entries["X"], structural, wind_pressure, group_by_elevation=True),
-        "wind_z_rows": _shelter_member_rows(lateral_entries["Z"], structural, wind_pressure, group_by_elevation=True),
+        "wind_x_rows": wind_x_rows,
+        "wind_z_rows": wind_z_rows,
         "uplift_rows": _shelter_member_rows(uplift_entries, structural, wind_pressure, group_by_elevation=False),
+        "height_varying": height_varying,
+        "height_bands": height_bands,
     }
 
 
@@ -1005,7 +1139,7 @@ def _shelter_uplift_resistance(project, structural):
 def _build_shelter_data(project, structural, wind):
     wind_pressure = _shelter_wind_pressure(wind)
     live = _shelter_live_workings(project, structural)
-    wind_workings = _shelter_wind_workings(structural, wind_pressure)
+    wind_workings = _shelter_wind_workings(structural, wind_pressure, float(wind.get("cf", 1.0) or 1.0))
     uplift = _shelter_uplift_resistance(project, structural)
     return {
         "is_shelter": True,

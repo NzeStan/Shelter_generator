@@ -780,12 +780,23 @@ tr:nth-child(even) td { background: var(--bg-row); }
     <tr><td></td><td>Density of air rho</td><td style="text-align:center;">{{ wind.rho }}</td><td>kg/m&sup3;</td></tr>
     <tr><td style="color:var(--navy-mid); font-size:8pt;">EN 1991-1-4, Sec 4.5</td><td>q<sub>p</sub>(z) = [1 + 7*I<sub>v</sub>(z)] x 0.5 x rho x V<sub>m</sub>(z)&sup2;</td><td style="text-align:center; font-weight:bold;">{{ wind.qp_nm2 }}</td><td>N/m&sup2;</td></tr>
     {% if structural.shelter.is_shelter %}
+      {% if structural.shelter.wind.height_varying %}
+    <tr><td colspan="4" style="background:var(--bg-hdr); font-weight:bold; padding:5px 6px; color:var(--navy);">Shelter Design Wind Pressure - Evaluated per Scaffold Lift</td></tr>
+    <tr><td colspan="4" style="line-height:1.6; padding:6px;">
+      In accordance with BS EN 1991-1-4:2005, the peak velocity pressure q<sub>p</sub>(z) increases with height, so wind
+      pressure on the shelter is not uniform over its full elevation. To capture this, q<sub>p</sub>(z) has been evaluated
+      separately at each of the {{ structural.shelter.wind.height_bands|length }} scaffold lift heights below and applied
+      as discrete, elevation-dependent loads in the STAAD.Pro model - a realistic representation of the increase in wind
+      pressure with height, consistent with the wind-action methodology of Eurocode 1.
+    </td></tr>
+      {% else %}
     <tr><td colspan="4" style="background:var(--bg-hdr); font-weight:bold; padding:5px 6px; color:var(--navy);">Shelter Design Wind Pressure = q<sub>p</sub> x C<sub>f</sub></td></tr>
     <tr><td>q<sub>p</sub> =</td><td>Peak velocity pressure (from above)</td><td style="text-align:center;">{{ wind.qp_knm2 }}</td><td>kN/m&sup2;</td></tr>
     <tr><td>C<sub>f</sub> =</td><td>Force coefficient for circular tube</td><td style="text-align:center;">{{ wind.cf }}</td><td></td></tr>
     <tr><td style="font-weight:bold; color:var(--navy);">q<sub>w</sub> = q<sub>p</sub> x C<sub>f</sub> =</td><td></td>
         <td style="text-align:center; font-weight:bold; background:var(--gold-lt); color:var(--navy);">{{ wind.shelter_pressure_kn_m2 }}</td><td><strong>kN/m&sup2;</strong></td></tr>
     <tr><td colspan="4" style="font-style:italic; color:var(--muted);">Member load = q<sub>w</sub> x tributary width. Vertical roof uplift WLY uses the same q<sub>w</sub> pressure basis.</td></tr>
+      {% endif %}
     {% else %}
     <tr><td colspan="4" style="background:var(--bg-hdr); font-weight:bold; padding:5px 6px; color:var(--navy);">Wind Load = C<sub>f</sub> x q<sub>p</sub> x A<sub>f</sub></td></tr>
     <tr><td>C<sub>f</sub> =</td><td></td><td style="text-align:center;">{{ wind.cf }}</td><td></td></tr>
@@ -796,6 +807,26 @@ tr:nth-child(even) td { background: var(--bg-row); }
     {% endif %}
   </tbody>
 </table>
+
+{% if structural.shelter.is_shelter and structural.shelter.wind.height_varying %}
+<table style="font-size:8.5pt; margin-top:6px;">
+  <thead>
+    <tr><th style="width:40%;">Reference Height z (m)</th><th style="width:60%; background:var(--gold); color:var(--navy);">q<sub>w</sub> = q<sub>p</sub>(z) x C<sub>f</sub> (kN/m&sup2;)</th></tr>
+  </thead>
+  <tbody>
+    {% for z, qw in structural.shelter.wind.height_bands %}
+    <tr>
+      <td style="text-align:center; font-weight:bold;">{{ "%.2f"|format(z) }}</td>
+      <td style="text-align:center; font-weight:bold; background:#BFD8EE;">{{ "%.3f"|format(qw) }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+<p style="font-size:7.8pt; font-style:italic; color:var(--muted); margin:4px 0 0;">
+  Member load = q<sub>w</sub> x tributary width, using the q<sub>w</sub> for that member's own lift. Vertical roof
+  uplift WLY uses the uppermost q<sub>w</sub>.
+</p>
+{% endif %}
 
 <div class="sub-hdr" style="margin-top:10px;">Wind Load Application</div>
 <table style="border:none; margin:4px 0;">
@@ -828,7 +859,8 @@ tr:nth-child(even) td { background: var(--bg-row); }
 <table style="font-size:8.4pt; margin:4px 0;">
   <thead>
     <tr>
-      <th style="width:30%;">Member</th>
+      <th style="width:26%;">Member</th>
+      {% if sw.height_varying %}<th style="width:16%;">Reference Height z (m)</th>{% endif %}
       <th>Tributary Width (m)</th>
       <th style="width:18%;">q<sub>w</sub> (kN/m&sup2;)</th>
       <th style="width:18%; background:var(--gold); color:var(--navy);">Member Load (kN/m)</th>
@@ -839,6 +871,7 @@ tr:nth-child(even) td { background: var(--bg-row); }
     {% set live_row_bg = '#EAF6EA' if row.member_role == 'Interior' else '#DDEBF3' %}
     <tr>
       <td style="font-weight:bold; background:{{ live_row_bg }};">{{ row.member_display }}</td>
+      {% if sw.height_varying %}<td style="text-align:center; background:{{ live_row_bg }};">{{ "%.2f"|format(row.reference_height_m) if row.reference_height_m is not none else '-' }}</td>{% endif %}
       <td style="text-align:center; background:{{ live_row_bg }};">{{ row.tributary_width_display }}</td>
       <td style="text-align:center; background:{{ live_row_bg }};">{{ "%.3f"|format(row.load_intensity_kn_m2) }}</td>
       <td style="text-align:center; font-weight:bold; background:#BFD8EE;">{{ "%.3f"|format(row.line_load_kn_m) }}</td>
@@ -853,7 +886,8 @@ tr:nth-child(even) td { background: var(--bg-row); }
 <table style="font-size:8.4pt; margin:4px 0;">
   <thead>
     <tr>
-      <th style="width:30%;">Member</th>
+      <th style="width:26%;">Member</th>
+      {% if sw.height_varying %}<th style="width:16%;">Reference Height z (m)</th>{% endif %}
       <th>Tributary Width (m)</th>
       <th style="width:18%;">q<sub>w</sub> (kN/m&sup2;)</th>
       <th style="width:18%; background:var(--gold); color:var(--navy);">Member Load (kN/m)</th>
@@ -864,6 +898,7 @@ tr:nth-child(even) td { background: var(--bg-row); }
     {% set live_row_bg = '#EAF6EA' if row.member_role == 'Interior' else '#DDEBF3' %}
     <tr>
       <td style="font-weight:bold; background:{{ live_row_bg }};">{{ row.member_display }}</td>
+      {% if sw.height_varying %}<td style="text-align:center; background:{{ live_row_bg }};">{{ "%.2f"|format(row.reference_height_m) if row.reference_height_m is not none else '-' }}</td>{% endif %}
       <td style="text-align:center; background:{{ live_row_bg }};">{{ row.tributary_width_display }}</td>
       <td style="text-align:center; background:{{ live_row_bg }};">{{ "%.3f"|format(row.load_intensity_kn_m2) }}</td>
       <td style="text-align:center; font-weight:bold; background:#BFD8EE;">{{ "%.3f"|format(row.line_load_kn_m) }}</td>
