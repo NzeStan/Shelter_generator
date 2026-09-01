@@ -456,50 +456,62 @@ def _resolve_vertical_tributary_axis(member_entries):
 def _assign_tributary_widths(member_entries, group_by_elevation=True):
     """Classify each member as Edge/Interior and size its tributary width from the spacing
     of neighbouring members. group_by_elevation=False ignores the member's Y level when
-    grouping - needed for sloped/roof members that never share an exact elevation."""
-    def _key(entry, geom):
-        if group_by_elevation:
-            return (entry["load_case"], geom["axis"], geom["y_mid"])
-        return (entry["load_case"], geom["axis"])
+    grouping - needed for sloped/roof members that never share an exact elevation.
 
-    groups = {}
-    for entry in member_entries:
-        geom = entry.get("geometry")
-        if not geom:
-            continue
-        groups.setdefault(_key(entry, geom), set()).add(geom["perp_coord"])
+    A second pass, dropping the elevation key entirely, is retried for anything still
+    unclassified after the first: e.g. a vertical standard's topmost lift segment is cut
+    off wherever a sloped roof happens to meet that particular standard, so its exact
+    height differs standard to standard even though they're all genuinely neighbours in
+    plan and belong to the same real pressure tier - only comparing by plan position
+    finds them. This never touches an entry the first pass already classified.
+    """
+    def _run_pass(entries, key_fn):
+        groups = {}
+        for entry in entries:
+            geom = entry.get("geometry")
+            if not geom:
+                continue
+            groups.setdefault(key_fn(entry, geom), set()).add(geom["perp_coord"])
 
-    for entry in member_entries:
-        geom = entry.get("geometry")
-        if not geom:
-            continue
+        for entry in entries:
+            geom = entry.get("geometry")
+            if not geom:
+                continue
 
-        coords = sorted(groups.get(_key(entry, geom), []))
-        if len(coords) < 2 or geom["perp_coord"] not in coords:
-            continue
+            coords = sorted(groups.get(key_fn(entry, geom), []))
+            if len(coords) < 2 or geom["perp_coord"] not in coords:
+                continue
 
-        idx = coords.index(geom["perp_coord"])
-        if idx == 0:
-            bay = coords[1] - coords[0]
-            tw = bay / 2.0
-            entry["member_role"] = "Edge"
-            entry["tributary_width_m"] = round(tw, 3)
-            entry["tributary_width_display"] = f"{_fmt_width(bay)} / 2 = {_fmt_width(tw)}"
-        elif idx == len(coords) - 1:
-            bay = coords[-1] - coords[-2]
-            tw = bay / 2.0
-            entry["member_role"] = "Edge"
-            entry["tributary_width_m"] = round(tw, 3)
-            entry["tributary_width_display"] = f"{_fmt_width(bay)} / 2 = {_fmt_width(tw)}"
-        else:
-            left_half = (coords[idx] - coords[idx - 1]) / 2.0
-            right_half = (coords[idx + 1] - coords[idx]) / 2.0
-            tw = left_half + right_half
-            entry["member_role"] = "Interior"
-            entry["tributary_width_m"] = round(tw, 3)
-            entry["tributary_width_display"] = (
-                f"({_fmt_width(left_half)} + {_fmt_width(right_half)}) = {_fmt_width(tw)}"
-            )
+            idx = coords.index(geom["perp_coord"])
+            if idx == 0:
+                bay = coords[1] - coords[0]
+                tw = bay / 2.0
+                entry["member_role"] = "Edge"
+                entry["tributary_width_m"] = round(tw, 3)
+                entry["tributary_width_display"] = f"{_fmt_width(bay)} / 2 = {_fmt_width(tw)}"
+            elif idx == len(coords) - 1:
+                bay = coords[-1] - coords[-2]
+                tw = bay / 2.0
+                entry["member_role"] = "Edge"
+                entry["tributary_width_m"] = round(tw, 3)
+                entry["tributary_width_display"] = f"{_fmt_width(bay)} / 2 = {_fmt_width(tw)}"
+            else:
+                left_half = (coords[idx] - coords[idx - 1]) / 2.0
+                right_half = (coords[idx + 1] - coords[idx]) / 2.0
+                tw = left_half + right_half
+                entry["member_role"] = "Interior"
+                entry["tributary_width_m"] = round(tw, 3)
+                entry["tributary_width_display"] = (
+                    f"({_fmt_width(left_half)} + {_fmt_width(right_half)}) = {_fmt_width(tw)}"
+                )
+
+    if group_by_elevation:
+        _run_pass(member_entries, lambda entry, geom: (entry["load_case"], geom["axis"], geom["y_mid"]))
+        remaining = [e for e in member_entries if not e.get("member_role")]
+        if remaining:
+            _run_pass(remaining, lambda entry, geom: (entry["load_case"], geom["axis"]))
+    else:
+        _run_pass(member_entries, lambda entry, geom: (entry["load_case"], geom["axis"]))
 
 
 def _platform_live_workings(project, structural):
