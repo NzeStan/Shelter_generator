@@ -15,7 +15,6 @@ class WindCalculator:
     Z_MIN       = 1.0       # Minimum height zmin (m)
     RHO         = 1.25      # Air density (kg/m³)
     CF          = 1.2       # Force coefficient for circular tube
-    D_TUBE      = 0.0483    # Tube outer diameter = 48.3 mm (m)
     K1          = 1.0       # Turbulence factor k1
     CO          = 1.0       # Orography factor Co(z)
 
@@ -46,10 +45,6 @@ class WindCalculator:
         # ── Peak velocity pressure (N/m²) ─────────────────────────────────────
         qp = (1 + 7 * iv) * 0.5 * self.RHO * vm ** 2       # EN 4.5(1)
 
-        # ── Wind load per unit length (kN/m) ──────────────────────────────────
-        af       = self.D_TUBE
-        wind_udl = self.CF * qp / 1000 * af
-
         return {
             # inputs
             'z':          self.z_raw,
@@ -72,6 +67,4 @@ class WindCalculator:
             'qp_nm2':     round(qp, 4),
             'qp_knm2':    round(qp / 1000, 6),
             'cf':         self.CF,
-            'af':         round(af, 4),
-            'wind_udl':   round(wind_udl, 6),
         }

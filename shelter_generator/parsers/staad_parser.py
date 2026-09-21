@@ -21,21 +21,14 @@ class StaadParser:
         supports      = self._parse_supports(std, geom)
         load_cases    = self._parse_load_cases(std)
         load_summaries = self._parse_load_summation_totals(out)
-        loads         = self._parse_loads(std, load_cases, load_summaries)
+        loads         = self._parse_loads(load_cases, load_summaries)
         combos        = self._parse_load_combinations(std)
         members       = self._parse_member_incidences(std, geom['nodes'])
-        support_reactions = self._parse_support_reactions(out, supports.get('tie_nodes', []), load_cases, combos, supports.get('fixed_nodes', []))
-        base_support_reactions = self._parse_base_support_reactions(
-            out,
-            supports.get('base_nodes', []),
-            load_cases,
-            combos,
-        )
+        support_reactions = self._parse_support_reactions(out, supports.get('tie_nodes', []), load_cases, combos)
 
         # Wind: identify wind load case numbers from .std, then look them up in .out
         wind_lcs = self._extract_wind_load_cases(std)
         wind     = self._parse_wind_totals(out, wind_lcs, load_summaries)
-        handrail = self._parse_handrail_loads(load_cases, load_summaries)
 
         code_chk = self._parse_code_check(out)
         member_forces = self._parse_member_forces(out)
@@ -54,10 +47,6 @@ class StaadParser:
             'cf':         0.3,
         }
 
-        cl = loads.get('chain_hoist_fy', 0.0)
-        static_kn = round(cl / 1.25, 3) if cl else 0.0
-        swl_candidate = cl or loads.get('platform_live_total_kn') or loads.get('platform_live_udl_kn_m') or 0.0
-
         return {
             'geometry':              geom,
             'supports':              supports,
@@ -65,18 +54,12 @@ class StaadParser:
             'load_cases':            load_cases,
             'load_summaries':         load_summaries,
             'wind_loads':            wind,
-            'handrail_loads':        handrail,
             'code_check':            code_chk,
             'member_forces':         member_forces,
             'displacements':         displ,
             'load_combinations':     combos,
             'support_reactions':      support_reactions,
-            'base_support_reactions': base_support_reactions,
             'frictional_resistance': fric,
-            'swl_kn':                round(swl_candidate, 3),
-            'swl_kg':                round(swl_candidate * 1000 / 9.81, 0) if swl_candidate else 0,
-            'static_weight_kn':      static_kn,
-            'static_weight_kg':      round(static_kn * 1000 / 9.81, 0),
             'members':               members,
         }
 
@@ -109,7 +92,7 @@ class StaadParser:
             return {
                 'height': 3.0, 'width': 1.8, 'depth': 1.5,
                 'kicker_lift': 0.3, 'mid_lifts': [1.8],
-                'y_levels': [0.3, 1.8, 3.0], 'nodes': {},
+                'nodes': {},
             }
 
         xs = [c[0] for c in coords.values()]
@@ -140,14 +123,13 @@ class StaadParser:
             'z_max':      round(z_max, 3),
             'kicker_lift': kicker,
             'mid_lifts':  mid_lifts,
-            'y_levels':   nz_ys,
             'nodes':      coords,
         }
 
     # supports
 
     def _parse_supports(self, std, geom):
-        base_nodes, tie_nodes, fixed_nodes = [], [], []
+        tie_nodes = []
         kfx = kfz = 5.596
 
         m = re.search(
@@ -163,7 +145,6 @@ class StaadParser:
             )
             if bm:
                 kfx, kfz = float(bm.group(2)), float(bm.group(3))
-                base_nodes = self._node_range(bm.group(1))
 
             for line in sec.splitlines():
                 upper = line.upper()
@@ -172,15 +153,10 @@ class StaadParser:
                     km = re.search(r'\bKFX\s+([-\d.E+]+)\s+KFZ\s+([-\d.E+]+)', line, re.IGNORECASE)
                     if km:
                         kfx, kfz = float(km.group(1)), float(km.group(2))
-                    base_nodes = self._node_range(ids_part)
                 elif 'FIXED BUT FY MX MY MZ' in upper:
                     ids_part = re.split(r'\bFIXED\b', line, 1, flags=re.IGNORECASE)[0]
                     tie_nodes.extend(self._node_range(ids_part))
-                elif re.search(r'\bFIXED\b', upper) and 'BUT' not in upper:
-                    ids_part = re.split(r'\bFIXED\b', line, 1, flags=re.IGNORECASE)[0]
-                    fixed_nodes.extend(self._node_range(ids_part))
             tie_nodes   = sorted(set(tie_nodes))
-            fixed_nodes = sorted(set(fixed_nodes))
 
         y_min = geom.get('y_min', 0.0)
         tie_heights = sorted(set(
@@ -188,9 +164,7 @@ class StaadParser:
         ))
 
         return {
-            'base_nodes':   base_nodes,
             'tie_nodes':    tie_nodes,
-            'fixed_nodes':  fixed_nodes,
             'tie_heights':  tie_heights,
             'kfx': kfx,
             'kfz': kfz,
@@ -250,22 +224,10 @@ class StaadParser:
         lt = (load_type or '').upper()
         tt = (title or '').upper()
 
-        if re.search(r'\bCW\b|COUNTER\s*WEIGHT|COUNTERWEIGHT', tt):
-            return 'counterweight'
         if 'DEAD' in lt or re.search(r'\bDL\b|DEAD', tt):
             return 'dead'
-        if re.search(r'\bHLX\b|HAND\s*RAIL.*\bX\b|HANDRAIL.*\bX\b', tt):
-            return 'handrail_x'
-        if re.search(r'\bHLZ\b|HAND\s*RAIL.*\bZ\b|HANDRAIL.*\bZ\b', tt):
-            return 'handrail_z'
         if 'WIND' in lt or re.search(r'\bWLX\b|\bWLY\b|\bWLZ\b|WIND', tt):
             return 'wind'
-        if re.search(r'\bCL\b|CHAIN|HOIST', tt):
-            return 'chain_hoist'
-        if re.search(r'\bILX\b|IMPACT.*\bX\b', tt):
-            return 'impact_x'
-        if re.search(r'\bILZ\b|IMPACT.*\bZ\b', tt):
-            return 'impact_z'
         if 'LIVE' in lt or re.search(r'\bLL\b|LIVE|PLATFORM', tt):
             return 'platform_live'
         return 'other'
@@ -347,26 +309,10 @@ class StaadParser:
             }
         return totals
 
-    def _max_udl(self, cases, axis):
-        vals = [
-            abs(udl['value'])
-            for case in cases
-            for udl in case.get('member_udls', [])
-            if udl['direction'] == axis
-        ]
-        return round(max(vals), 3) if vals else 0.0
-
-    def _parse_loads(self, std, load_cases=None, load_summaries=None):
+    def _parse_loads(self, load_cases=None, load_summaries=None):
         load_cases = load_cases or []
         load_summaries = load_summaries or {}
         res = {
-            'chain_hoist_fy': 0.0,
-            'impact_fx': 0.0,
-            'impact_fz': 0.0,
-            'hoist_node': None,
-            'platform_live_udl_kn_m': 0.0,
-            'platform_live_udls_kn_m': [],
-            'platform_live_total_kn': 0.0,
             'platform_live_cases': [],
             'platform_live_case_totals': [],
             'platform_live_member_loads': [],
@@ -375,19 +321,6 @@ class StaadParser:
         live_cases = [case for case in load_cases if case['category'] == 'platform_live']
         if live_cases:
             res['platform_live_cases'] = [case['number'] for case in live_cases]
-            live_udls = sorted(set(
-                round(abs(udl['value']), 3)
-                for case in live_cases
-                for udl in case.get('member_udls', [])
-                if udl['direction'] == 'Y'
-            ))
-            res['platform_live_udls_kn_m'] = live_udls
-            res['platform_live_udl_kn_m'] = max(live_udls) if live_udls else 0.0
-            totals = [
-                load_summaries.get(case['number'], {}).get('fy', 0.0)
-                for case in live_cases
-            ]
-            res['platform_live_total_kn'] = round(max(totals), 3) if totals else 0.0
             res['platform_live_case_totals'] = [
                 {
                     'load_case': case['number'],
@@ -410,54 +343,11 @@ class StaadParser:
                 if udl['direction'] == 'Y'
             ]
 
-        m = re.search(r'CHAIN HOIST.*?JOINT LOAD.*?(\d+)\s+FY\s+([-\d.]+)', std, re.DOTALL | re.IGNORECASE)
-        if m:
-            res['hoist_node'] = int(m.group(1))
-            res['chain_hoist_fy'] = abs(float(m.group(2)))
-
-        m = re.search(r'IMPACT.*?X.*?JOINT LOAD.*?\d+\s+FX\s+([\d.]+)', std, re.DOTALL | re.IGNORECASE)
-        if m:
-            res['impact_fx'] = float(m.group(1))
-
-        m = re.search(r'IMPACT.*?Z.*?JOINT LOAD.*?\d+\s+FZ\s+([\d.]+)', std, re.DOTALL | re.IGNORECASE)
-        if m:
-            res['impact_fz'] = float(m.group(1))
-
         return res
 
-    def _parse_handrail_loads(self, load_cases, load_summaries):
-        result = {
-            'has_x': False,
-            'has_z': False,
-            'total_x': 0.0,
-            'total_z': 0.0,
-            'udl_x': 0.0,
-            'udl_z': 0.0,
-            'load_cases_x': [],
-            'load_cases_z': [],
-        }
-
-        for case in load_cases:
-            summary = load_summaries.get(case['number'], {})
-            if case['category'] == 'handrail_x':
-                result['has_x'] = True
-                result['load_cases_x'].append(case['number'])
-                result['udl_x'] = max(result['udl_x'], self._max_udl([case], 'X'))
-                result['total_x'] = max(result['total_x'], summary.get('fx', 0.0), summary.get('fz', 0.0))
-            elif case['category'] == 'handrail_z':
-                result['has_z'] = True
-                result['load_cases_z'].append(case['number'])
-                result['udl_z'] = max(result['udl_z'], self._max_udl([case], 'Z'))
-                result['total_z'] = max(result['total_z'], summary.get('fz', 0.0), summary.get('fx', 0.0))
-
-        result['total_x'] = round(result['total_x'], 3)
-        result['total_z'] = round(result['total_z'], 3)
-        return result
-
-    def _parse_support_reactions(self, out, tie_nodes=None, load_cases=None, load_combinations=None, fixed_nodes=None):
+    def _parse_support_reactions(self, out, tie_nodes=None, load_cases=None, load_combinations=None):
         tie_nodes   = set(tie_nodes   or [])
-        fixed_nodes = set(fixed_nodes or [])
-        if not tie_nodes and not fixed_nodes:
+        if not tie_nodes:
             return {
                 'tie_joints': [],
                 'net_global': {
@@ -465,7 +355,6 @@ class StaadParser:
                     'rows': [],
                     'governing': None,
                 },
-                'net_fy_at_fixed': {'rows': [], 'governing': None},
             }
 
         titles = {}
@@ -488,7 +377,6 @@ class StaadParser:
 
         by_load = {}
         by_node = {}   # tracks peak resultant at each individual tie node
-        by_load_fy = {}  # FY accumulation at fully-FIXED nodes
         current_joint = None
         in_reactions = False
         for raw in out.splitlines():
@@ -513,16 +401,6 @@ class StaadParser:
                 continue
 
             load_no = int(m.group(2))
-
-            # --- FY accumulation for fully-FIXED suspension nodes ---
-            if current_joint in fixed_nodes:
-                fy = float(m.group(4))
-                fy_item = by_load_fy.setdefault(load_no, {
-                    'load_case': load_no,
-                    'title': titles.get(load_no, f'LC {load_no}'),
-                    'ry_net': 0.0,
-                })
-                fy_item['ry_net'] += fy
 
             if current_joint not in tie_nodes:
                 continue
@@ -589,16 +467,6 @@ class StaadParser:
         )
         worst_individual_tie = per_node_peaks[0] if per_node_peaks else None
 
-        fy_rows = [
-            {
-                'load_case': item['load_case'],
-                'title': item['title'],
-                'total_y': round(item['ry_net'], 3),
-            }
-            for item in sorted(by_load_fy.values(), key=lambda x: x['load_case'])
-        ]
-        governing_fy = max(fy_rows, key=lambda r: abs(r['total_y']), default=None)
-
         return {
             'tie_joints': sorted(tie_nodes),
             'net_global': {
@@ -608,75 +476,6 @@ class StaadParser:
             },
             'per_node_peaks': per_node_peaks,
             'worst_individual_tie': worst_individual_tie,
-            'net_fy_at_fixed': {
-                'fixed_joints': sorted(fixed_nodes),
-                'rows': fy_rows,
-                'governing': governing_fy,
-            },
-        }
-
-    def _parse_base_support_reactions(self, out, base_nodes=None, load_cases=None, load_combinations=None):
-        """Return vertical base reactions by load case for counterweight checks."""
-        base_nodes = set(base_nodes or [])
-        if not base_nodes:
-            return {'base_joints': [], 'rows': []}
-
-        titles = {}
-        for case in load_cases or []:
-            titles[case['number']] = case.get('title') or case.get('load_type') or f"LC {case['number']}"
-        for combo in load_combinations or []:
-            titles[combo['number']] = combo.get('title') or f"LC {combo['number']}"
-
-        row_re = re.compile(
-            r'^\s*(?:(\d+)\s+)?(\d+)\s+'
-            r'([-+]?\d*\.?\d+(?:[Ee][-+]?\d+)?)\s+'
-            r'([-+]?\d*\.?\d+(?:[Ee][-+]?\d+)?)\s+'
-            r'([-+]?\d*\.?\d+(?:[Ee][-+]?\d+)?)\s+'
-            r'([-+]?\d*\.?\d+(?:[Ee][-+]?\d+)?)\s+'
-            r'([-+]?\d*\.?\d+(?:[Ee][-+]?\d+)?)\s+'
-            r'([-+]?\d*\.?\d+(?:[Ee][-+]?\d+)?)\s*$'
-        )
-
-        by_load = {}
-        current_joint = None
-        in_reactions = False
-        for raw in out.splitlines():
-            line = raw.replace('\x05', '').strip('\r')
-            upper = line.upper()
-            if 'SUPPORT REACTIONS' in upper:
-                in_reactions = True
-                continue
-            if not in_reactions:
-                continue
-            if any(marker in upper for marker in ('MEMBER     TABLE', 'PARAMETER', 'FINISH')):
-                break
-            if not line.strip() or 'JOINT' in upper or '---' in line or 'STAAD SPACE' in upper:
-                continue
-
-            match = row_re.match(line)
-            if not match:
-                continue
-            if match.group(1):
-                current_joint = int(match.group(1))
-            if current_joint not in base_nodes:
-                continue
-
-            load_no = int(match.group(2))
-            by_load.setdefault(load_no, {})[current_joint] = float(match.group(4))
-
-        return {
-            'base_joints': sorted(base_nodes),
-            'rows': [
-                {
-                    'load_case': load_no,
-                    'title': titles.get(load_no, f'LC {load_no}'),
-                    'reactions': [
-                        {'node': node, 'fy': round(fy, 4)}
-                        for node, fy in sorted(reactions.items())
-                    ],
-                }
-                for load_no, reactions in sorted(by_load.items())
-            ],
         }
 
     # wind load case identification

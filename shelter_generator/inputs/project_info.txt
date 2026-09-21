@@ -10,15 +10,9 @@ REVISION:            1
 # ENGINEERING_DRAWING_FORMAT options: standard, grid, none
 AUTO_RENDER_3D_MODEL:        yes
 AUTO_ENGINEERING_DRAWINGS:   yes
-ENGINEERING_DRAWING_FORMAT:  standard
+ENGINEERING_DRAWING_FORMAT:  grid
 # Show the large 3D Isometric View as the last page of the PDF (default: yes)
 SHOW_3D_ISOMETRIC_PAGE:      no
-
-# Legacy cantilever counterweight check. Shelter uplift resistance uses the section below.
-COUNTERWEIGHT_ENABLED: no
-COUNTERWEIGHT_ZONE_NODES:
-COUNTERWEIGHT_ADOPTED_TONNES:
-COUNTERWEIGHT_PIVOT_NODES:
 
 # Shelter location and type
 LOCATION:            Train 2
@@ -40,8 +34,6 @@ SEAT_LIVE_LOAD_KN_M:       0.75
 # Main walking platform live load.
 PLATFORM_LIVE_LOAD_KN_M2:  1.5
 
-# Legacy scaffold SWL override. Leave blank for shelter reports unless a fallback is needed.
-LOAD_INTENSITY_KN_M2:
 CATEGORY_1_ASSURANCE_NOTE: no
 
 # Uplift resistance / counterweight inputs

@@ -17,3 +17,5 @@ __pycache__/
 
 # Local Claude Code tooling config
 .claude/
+# ezdxf font cache (rebuilt automatically)
+.ezdxf_cache/
