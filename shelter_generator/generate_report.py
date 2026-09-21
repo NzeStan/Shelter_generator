@@ -71,6 +71,7 @@ import sys
 import base64
 import math
 import subprocess
+from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
 from datetime import datetime
 
@@ -450,7 +451,20 @@ def _resolve_vertical_tributary_axis(member_entries):
         for g in geoms:
             g["axis"] = "V"
             g["perp_coord"] = g["x"] if use_x else g["z"]
-            g["y_mid"] = (g["y_mid"], g["z"] if use_x else g["x"])
+            # Rounded coarser than the 3dp node precision: this is only used to tell
+            # "same wall" apart from "different wall", and a couple of standards on the
+            # same wall line can carry a ~1cm node-position discrepancy (e.g. 0.30 vs
+            # 0.31) that would otherwise split one wall into two spurious groups.
+            g["y_mid"] = (g["y_mid"], round(g["z"] if use_x else g["x"], 1))
+
+
+WIND_TIER_ELEVATION_GAP_M = 0.6
+# Standards whose lift segment is cut short by a sloped roof land at a slightly
+# different height member-to-member even though they're the same real design tier
+# (observed spread up to ~0.4m on a single-pitch roof); genuinely different design
+# tiers/lifts are spaced much further apart (~1m+ in every project seen so far). This
+# gap sits between the two, so elevations within it cluster together as one tier while
+# real tier boundaries still split.
 
 
 def _assign_tributary_widths(member_entries, group_by_elevation=True):
@@ -458,12 +472,16 @@ def _assign_tributary_widths(member_entries, group_by_elevation=True):
     of neighbouring members. group_by_elevation=False ignores the member's Y level when
     grouping - needed for sloped/roof members that never share an exact elevation.
 
-    A second pass, dropping the elevation key entirely, is retried for anything still
-    unclassified after the first: e.g. a vertical standard's topmost lift segment is cut
-    off wherever a sloped roof happens to meet that particular standard, so its exact
-    height differs standard to standard even though they're all genuinely neighbours in
-    plan and belong to the same real pressure tier - only comparing by plan position
-    finds them. This never touches an entry the first pass already classified.
+    When group_by_elevation=True, members are first bucketed by (load case, run axis,
+    wall) and then clustered within each bucket by elevation gap (see
+    WIND_TIER_ELEVATION_GAP_M) rather than requiring an exact height match: a vertical
+    standard's topmost lift segment is cut off wherever a sloped roof happens to meet
+    that particular standard, so its exact height can differ standard to standard even
+    though they're all genuinely neighbours in plan and belong to the same real pressure
+    tier. Clustering finds them without needing a hand-off to a second, coarser pass -
+    and without letting a coincidental partial height match (two members that happen to
+    share an exact height by chance) claim a smaller, wrong set of neighbours than the
+    tier actually has.
     """
     def _run_pass(entries, key_fn):
         groups = {}
@@ -506,10 +524,33 @@ def _assign_tributary_widths(member_entries, group_by_elevation=True):
                 )
 
     if group_by_elevation:
-        _run_pass(member_entries, lambda entry, geom: (entry["load_case"], geom["axis"], geom["y_mid"]))
-        remaining = [e for e in member_entries if not e.get("member_role")]
-        if remaining:
-            _run_pass(remaining, lambda entry, geom: (entry["load_case"], geom["axis"]))
+        buckets = {}
+        for entry in member_entries:
+            geom = entry.get("geometry")
+            if not geom:
+                continue
+            y_mid = geom["y_mid"]
+            height = y_mid[0] if isinstance(y_mid, tuple) else y_mid
+            wall = y_mid[1] if isinstance(y_mid, tuple) else None
+            buckets.setdefault((entry["load_case"], geom["axis"], wall), []).append((entry, height))
+
+        for bucket in buckets.values():
+            bucket.sort(key=lambda pair: pair[1])
+            cluster_id = 0
+            prev_height = None
+            for entry, height in bucket:
+                if prev_height is not None and height - prev_height > WIND_TIER_ELEVATION_GAP_M:
+                    cluster_id += 1
+                entry["_elevation_cluster"] = cluster_id
+                prev_height = height
+
+        _run_pass(member_entries, lambda entry, geom: (
+            entry["load_case"], geom["axis"],
+            geom["y_mid"][1] if isinstance(geom["y_mid"], tuple) else None,
+            entry.get("_elevation_cluster"),
+        ))
+        for entry in member_entries:
+            entry.pop("_elevation_cluster", None)
     else:
         _run_pass(member_entries, lambda entry, geom: (entry["load_case"], geom["axis"]))
 
@@ -929,9 +970,31 @@ def _shelter_live_workings(project, structural):
     roof_rows = _shelter_member_rows(roof_entries, structural, roof_intensity, group_by_elevation=False)
     seat_member_count = len({e["member_id"] for e in seat_entries})
 
+    # STAAD prints one SUMMATION FORCE-Y per load case, and all three live categories share
+    # a single LL case, so it has no per-category split. Each category's total is therefore
+    # the sum of UDL x member length over its members - the same arithmetic STAAD itself
+    # uses to build the case total, so the three add back up to the STAAD figure.
+    members = structural.get("members", {}) or {}
+
+    def _category_total(entries):
+        total = 0.0
+        for e in entries:
+            length_m = (members.get(e["member_id"]) or {}).get("length_mm", 0.0) / 1000.0
+            total += e["line_load_kn_m"] * length_m
+        # Half-up on the 6dp value: plain round() sends 107.055 to 107.05 (float repr),
+        # leaving the displayed category totals a hundredth short of the STAAD total.
+        return float(Decimal(str(round(total, 6))).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+
+    live_case_totals = (structural.get("loads", {}) or {}).get("platform_live_case_totals") or []
+    staad_total = round(sum(c["total_y"] for c in live_case_totals), 2) if live_case_totals else 0.0
+
     return {
         "roof_intensity_kn_m2": roof_intensity,
         "seat_line_load_kn_m": seat_line_load,
+        "platform_total_kn": _category_total(platform_entries),
+        "roof_total_kn": _category_total(roof_entries),
+        "seat_total_kn": _category_total(seat_entries),
+        "staad_total_kn": staad_total,
         "seat_member_count": seat_member_count,
         "platform_intensity_kn_m2": platform_intensity,
         "roof_rows": roof_rows,
@@ -985,7 +1048,7 @@ def _solve_wind_reference_height(target_qw, cf, lo=0.1, hi=200.0, tol=1e-6):
     return round((lo + hi) / 2.0, 3)
 
 
-def _wind_pressure_tiers(row_lists, cf, gap=0.05):
+def _wind_pressure_tiers(row_lists, cf, structure_height=None, gap=0.05):
     """Some projects don't use one wind pressure for the whole structure - they evaluate
     EN 1991-1-4's qp(z) at several reference heights (each measured from ground zero, not
     from the previous lift) and apply the resulting pressure to the standard segments in
@@ -1025,6 +1088,21 @@ def _wind_pressure_tiers(row_lists, cf, gap=0.05):
             lookup[q] = (z, tier_qw)
 
     tiers.sort()
+
+    # The topmost tier's reference height is, by definition, the full scaffold height
+    # (the tallest standard) - not a value to solve for. Rounding line_load/tributary
+    # width to 3dp before back-deriving qw introduces enough error that bisection lands
+    # a few mm/cm short of the true height (e.g. 5.994 instead of 6.0), so snap it back
+    # once it's already been confirmed close (within one lift's worth of tolerance) -
+    # anything further off means this tier isn't actually the roof-height band and is
+    # left alone rather than forced.
+    if tiers and structure_height is not None and abs(tiers[-1][0] - structure_height) <= 0.5:
+        z, tier_qw = tiers[-1]
+        tiers[-1] = (round(float(structure_height), 3), tier_qw)
+        for q, (old_z, old_qw) in list(lookup.items()):
+            if old_z == z:
+                lookup[q] = (tiers[-1][0], old_qw)
+
     return lookup, tiers
 
 
@@ -1073,13 +1151,26 @@ def _shelter_wind_workings(structural, wind_pressure, cf):
 
     height_bands = []
     if height_varying:
-        # Only annotate each row with which reference height it belongs to - never touch
-        # its own load_intensity_kn_m2, which must stay the exact value line_load was
-        # divided by so "Load Intensity x Tributary Width = Member Load" keeps reconciling.
-        lookup, height_bands = _wind_pressure_tiers([wind_x_rows, wind_z_rows], cf)
+        # Every row belonging to the same reference height must display the exact same
+        # qw - the summary table's clustered tier value - rather than its own row's
+        # back-derived intensity (which can be a rounding-noise hair off, e.g. 1.277 vs
+        # 1.278, purely from dividing slightly different real loads/widths). Re-deriving
+        # the working from that shared tier value keeps the whole tier reading as one
+        # consistent number, at the cost of the working's right-hand side occasionally
+        # being a thousandth of a kN off the real STAAD load from rounding - normal and
+        # expected when several rows are presented under one representative pressure.
+        geom = structural.get("geometry", {}) or {}
+        structure_height = geom.get("y_max", geom.get("height"))
+        lookup, height_bands = _wind_pressure_tiers([wind_x_rows, wind_z_rows], cf, structure_height=structure_height)
         for row in wind_x_rows + wind_z_rows:
-            z, _tier_qw = lookup.get(round(row["load_intensity_kn_m2"], 3), (None, None))
+            z, tier_qw = lookup.get(round(row["load_intensity_kn_m2"], 3), (None, None))
             row["reference_height_m"] = z
+            if tier_qw is not None:
+                row["load_intensity_kn_m2"] = tier_qw
+                row["working"] = (
+                    f"{_format_load_value(tier_qw)} x "
+                    f"{_fmt_width(row['tributary_width_m'])} = {_format_load_value(row['line_load_kn_m'])}"
+                )
 
     return {
         "wind_x_rows": wind_x_rows,
@@ -2808,7 +2899,6 @@ def main():
     )
 
     # -- Connection stability: max axial in HORIZONTAL members only (coupler slipping) --
-    cc = structural['code_check']
     def _float(val, fallback):
         try: return float(val) if val else fallback
         except: return fallback
@@ -2832,107 +2922,111 @@ def main():
             return False
         return abs(n2[1] - n1[1]) < 0.01
 
-    # Prefer the real per-member, per-load-case axial force (from a STAAD 'PRINT MEMBER
-    # FORCES' table) over the STAAD steel code-check block: the code-check axial is tied
-    # to whichever load case governs that member's bending/combined-stress UC ratio, not
-    # necessarily the load case with the largest raw axial force - which is what actually
-    # matters for a coupler slipping check. Falls back to the code-check block's axial for
-    # projects that don't have a member-forces table.
+    # Real per-member, per-load-case axial force, from a STAAD 'PRINT MEMBER FORCES'
+    # table (not the steel code-check block: the code-check axial is tied to whichever
+    # load case governs that member's bending/combined-stress UC ratio, not necessarily
+    # the load case with the largest raw axial force - which is what actually matters
+    # for a coupler slipping check).
     member_forces = structural.get('member_forces') or {}
     combos = structural.get('load_combinations', [])
-    uls_lc_numbers = {c['number'] for c in combos if str(c.get('title', '')).strip().upper().startswith('ULS')}
-    sls_lc_numbers = {c['number'] for c in combos if str(c.get('title', '')).strip().upper().startswith('SLS')}
+
+    def _combo_basis(combo):
+        """ULS if the combo title says so, else SLS; falls back to inspecting the load
+        factors (ULS combos here are always 1.5x, SLS combos always 1.0x) for projects
+        whose combo titles don't carry an explicit ULS/SLS prefix."""
+        title = str(combo.get('title', '')).strip().upper()
+        if title.startswith('ULS'):
+            return 'ULS'
+        if title.startswith('SLS'):
+            return 'SLS'
+        factors = combo.get('factors', [])
+        if factors and all(abs(abs(f) - 1.0) < 0.01 for _, f in factors):
+            return 'SLS'
+        return 'ULS'
+
+    uls_lc_numbers = {c['number'] for c in combos if _combo_basis(c) == 'ULS'}
+    sls_lc_numbers = {c['number'] for c in combos if _combo_basis(c) == 'SLS'}
 
     def _peak_axial(per_load, lc_numbers):
-        """(abs_axial, signed_axial, load_case) of the largest-magnitude axial among
-        the given load cases, or None if none apply."""
-        candidates = [(abs(v), v, lc) for lc, v in per_load.items() if lc in lc_numbers]
+        """(abs_axial, signed_axial, node, load_case) of the largest-magnitude axial
+        among the given load cases, or None if none apply."""
+        candidates = [(abs(v[0]), v[0], v[1], lc) for lc, v in per_load.items() if lc in lc_numbers]
         return max(candidates, key=lambda t: t[0]) if candidates else None
 
-    axial_source = 'member_forces' if member_forces and uls_lc_numbers else 'code_check'
+    axial_source = 'member_forces'
+    uls_rows = []
+    for mid, per_load in member_forces.items():
+        if not _is_horizontal(mid):
+            continue
+        peak = _peak_axial(per_load, uls_lc_numbers)
+        if peak is None:
+            continue
+        abs_v, signed_v, node, lc = peak
+        uls_rows.append({'member': mid, 'axial': round(abs_v, 3), 'node': node, 'lc': lc})
+    uls_rows.sort(key=lambda r: r['axial'], reverse=True)
 
-    if axial_source == 'member_forces':
-        uls_rows = []
-        for mid, per_load in member_forces.items():
-            if not _is_horizontal(mid):
-                continue
-            peak = _peak_axial(per_load, uls_lc_numbers)
-            if peak is None:
-                continue
-            abs_v, signed_v, lc = peak
-            uls_rows.append({'member': mid, 'axial': round(abs_v, 3), 'type': 'C' if signed_v < 0 else 'T', 'lc': lc})
-        uls_rows.sort(key=lambda r: r['axial'], reverse=True)
-
-        if uls_rows:
-            best = uls_rows[0]
-            auto_axial, auto_axial_member, auto_axial_type = best['axial'], best['member'], best['type']
-            top_axial_members = uls_rows[:30]
-        else:
-            axial_source = 'code_check'  # no horizontal members had member-forces data
-
-    if axial_source == 'code_check':
-        horiz_members = [m for m in cc.get('members', []) if _is_horizontal(m['member'])]
-        if horiz_members:
-            best_horiz = max(horiz_members, key=lambda m: m['axial'])
-            auto_axial        = best_horiz['axial']
-            auto_axial_member = best_horiz['member']
-            auto_axial_type   = best_horiz.get('type', 'C')
-        else:
-            auto_axial        = cc['max_axial']
-            auto_axial_member = cc['max_axial_member']
-            auto_axial_type   = cc['max_axial_type']
-        top_axial_members = sorted(horiz_members if horiz_members else cc.get('members', []),
-                                   key=lambda m: m['axial'], reverse=True)[:30]
+    best = uls_rows[0]
+    auto_axial, auto_axial_member = best['axial'], best['member']
+    top_axial_members = uls_rows[:30]
 
     # Manual override (mirrors the deflection-check pattern): auto-computed above from
     # the STAAD output; override only if that computation can't be trusted for a project.
     override_axial = _optional_float(project.get('MAX_AXIAL_KN'))
     if override_axial is not None:
         auto_axial        = override_axial
-        auto_axial_member = _optional_float(project.get('MAX_AXIAL_MEMBER')) or auto_axial_member
-        auto_axial_type   = (project.get('MAX_AXIAL_TYPE') or auto_axial_type or 'C').strip().upper()
+        override_member   = _optional_float(project.get('MAX_AXIAL_MEMBER'))
+        auto_axial_member = int(override_member) if override_member is not None else auto_axial_member
         axial_source      = 'manual'
         top_axial_members = [{
-            'member': auto_axial_member, 'type': auto_axial_type,
+            'member': auto_axial_member, 'node': project.get('MAX_AXIAL_NODE') or '',
             'axial': round(override_axial, 3), 'lc': project.get('MAX_AXIAL_LC') or '',
         }]
 
     # Check ULS first; if the coupler class fails under ULS, fall back to SLS (unfactored,
-    # gamma=1.0 — see Load Combinations legend).
+    # gamma=1.0 — see Load Combinations legend). This is a fallback verification basis, not
+    # a substitute UC check — the Status/Clause/UC Ratio columns are ULS-specific and are
+    # not shown for the SLS view.
     connection_basis = 'ULS'
     max_axial        = auto_axial
     max_axial_member = str(auto_axial_member or '')
-    max_axial_type   = auto_axial_type
     connection_class = _connection_class(max_axial)
 
     override_sls_axial = _optional_float(project.get('MAX_AXIAL_SLS_KN'))
     if connection_class['status'] == 'FAIL':
         connection_basis = 'SLS'
         if override_sls_axial is not None:
-            max_axial = round(override_sls_axial, 3)
-            top_axial_members = [{**top_axial_members[0], 'axial': max_axial}] if top_axial_members else []
+            override_sls_member = _optional_float(project.get('MAX_AXIAL_SLS_MEMBER'))
+            max_axial        = round(override_sls_axial, 3)
+            max_axial_member = str(int(override_sls_member) if override_sls_member is not None else (auto_axial_member or ''))
+            sls_lc           = project.get('MAX_AXIAL_SLS_LC') or (top_axial_members[0]['lc'] if top_axial_members else '')
+            sls_node         = project.get('MAX_AXIAL_SLS_NODE') or (top_axial_members[0].get('node', '') if top_axial_members else '')
+            axial_source     = 'manual'
+            top_axial_members = [{
+                'member': max_axial_member, 'node': sls_node,
+                'axial': max_axial, 'lc': sls_lc,
+            }]
         elif axial_source == 'member_forces':
             # Look up the SAME governing member's real SLS-combo axial directly - exact,
             # no unfactoring needed.
             peak = _peak_axial(member_forces.get(auto_axial_member, {}), sls_lc_numbers)
             if peak is not None:
-                abs_v, signed_v, lc = peak
-                max_axial, max_axial_type = round(abs_v, 3), 'C' if signed_v < 0 else 'T'
+                abs_v, signed_v, node, lc = peak
+                max_axial = round(abs_v, 3)
 
             sls_rows = []
             for row in top_axial_members:
                 peak = _peak_axial(member_forces.get(row['member'], {}), sls_lc_numbers)
                 if peak is not None:
-                    abs_v, signed_v, lc = peak
+                    abs_v, signed_v, node, lc = peak
                     sls_rows.append({'member': row['member'], 'axial': round(abs_v, 3),
-                                      'type': 'C' if signed_v < 0 else 'T', 'lc': lc})
+                                      'node': node, 'lc': lc})
                 else:
                     sls_rows.append({**row, 'axial': round(row['axial'] / 1.5, 3)})
             sls_rows.sort(key=lambda r: r['axial'], reverse=True)
             top_axial_members = sls_rows
         else:
-            # Legacy path (no member-forces table): SLS force = ULS force / 1.5, since
-            # every ULS combo here is the same SLS combo at 1.5x - an exact unfactoring.
+            # Manual-override fallback (no MAX_AXIAL_SLS_KN given): approximate SLS force
+            # as ULS force / 1.5, since every ULS combo here is the same SLS combo at 1.5x.
             max_axial = round(auto_axial / 1.5, 3)
             top_axial_members = [
                 {**m, 'axial': round(m['axial'] / 1.5, 3)}
@@ -2986,7 +3080,6 @@ def main():
         date_gen      = date_gen,
         max_axial        = max_axial,
         max_axial_member = max_axial_member,
-        max_axial_type   = max_axial_type,
         connection_class  = connection_class,
         connection_basis  = connection_basis,
         axial_source      = axial_source,

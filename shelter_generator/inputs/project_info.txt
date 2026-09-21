@@ -4,7 +4,7 @@
 # Document
 DOCUMENT_NO:         PMS-WA-ARCO-084
 SCAFFOLD_DRAWING_NO: PMS-WA-ARCO-084
-REVISION:            0
+REVISION:            1
 
 # Integrated outputs
 # ENGINEERING_DRAWING_FORMAT options: standard, grid, none
@@ -21,7 +21,7 @@ COUNTERWEIGHT_ADOPTED_TONNES:
 COUNTERWEIGHT_PIVOT_NODES:
 
 # Shelter location and type
-LOCATION:            Train 3
+LOCATION:            Train 2
 AREA:                D
 SCAFFOLD_TYPE:       Shelter
 # Optional descriptor for the shelter's designated use, e.g. Security, Rest, Smoking.
@@ -63,7 +63,7 @@ TIE_FORCE_FX:
 TIE_FORCE_FZ:
 
 PERMIT_NO:
-ERMT_NO:             PIC/PMS/26/3560
+ERMT_NO:             PIC/PMS/26/3721
 
 # Personnel
 DESIGNED_BY_ID:      PMS/C3-1141
@@ -88,14 +88,14 @@ DOC_LIFE:            3 Years
 
 # Deflection Check - auto-extracted from .out file SLS combination results.
 # Override only if auto-extraction fails:
-MAX_VERT_DISP_MM:0.571
-MAX_VERT_DISP_LC: 10
-MAX_HORIZ_DISP_MM:1.924
-MAX_HORIZ_DISP_LC:7
+MAX_VERT_DISP_MM:0.455
+MAX_VERT_DISP_LC: 7
+MAX_HORIZ_DISP_MM:1.877
+MAX_HORIZ_DISP_LC:8
 # Member ID whose length defines the span L for deflection limits (optional).
 # If blank, the member connected to the critical-displacement node is used automatically.
-MAX_VERT_MEMBER:2351
-MAX_HORIZ_MEMBER:2097
+MAX_VERT_MEMBER:431
+MAX_HORIZ_MEMBER:2121
 
 # Connection Stability Check (coupler slipping) - auto-computed from the STAAD member
 # forces output (peak axial force among horizontal ledgers/transoms over the ULS load
@@ -103,8 +103,11 @@ MAX_HORIZ_MEMBER:2097
 # Override only if the automatic computation can't be trusted for this project:
 MAX_AXIAL_KN:
 MAX_AXIAL_MEMBER:
-MAX_AXIAL_TYPE:
+MAX_AXIAL_NODE:
 MAX_AXIAL_LC:
 # Optional separate override for the SLS fallback value (only used if the ULS check,
 # using MAX_AXIAL_KN above, fails). Leave blank to compute it automatically.
 MAX_AXIAL_SLS_KN:
+MAX_AXIAL_SLS_MEMBER:
+MAX_AXIAL_SLS_NODE:
+MAX_AXIAL_SLS_LC:

@@ -801,8 +801,8 @@ class StaadParser:
                       <load> <jt> <axial> ...   (same member, new load, joint 1)
                              <jt> <axial> ...   (same member, same load, joint 2)
 
-        Returns {member_id: {load_case: axial_kn}}, keeping the larger-magnitude axial
-        of the member's two end joints (STAAD prints an equal-and-opposite pair).
+        Returns {member_id: {load_case: (axial_kn, joint)}}, keeping the larger-magnitude
+        axial of the member's two end joints (STAAD prints an equal-and-opposite pair).
         """
         result = {}
         m = re.search(
@@ -834,6 +834,7 @@ class StaadParser:
             except ValueError:
                 continue
 
+            joint = int(toks[n_int - 1])
             if n_int == 3:
                 member, load = int(toks[0]), int(toks[1])
             elif n_int == 2:
@@ -843,8 +844,8 @@ class StaadParser:
 
             per_load = result.setdefault(member, {})
             prev = per_load.get(load)
-            if prev is None or abs(axial) > abs(prev):
-                per_load[load] = axial
+            if prev is None or abs(axial) > abs(prev[0]):
+                per_load[load] = (axial, joint)
 
         return result
 
@@ -869,20 +870,36 @@ class StaadParser:
         if not cc:
             return res
 
+        # The clause/ratio/lc line normally holds exactly those 3 tokens (e.g.
+        # "EC-6.2.9.1  0.476  18"), but some clauses insert an extra token before the
+        # ratio - "EC3-5: 5.5  0.000  22" (a slenderness ratio ahead of the real
+        # utilization ratio) or "EC-6.2.3 (T)  0.031  21" (a tension/compression tag).
+        # A regex assuming a fixed 3-token layout silently misreads the extra-token
+        # lines: it grabs the slenderness value as if it were the ratio and truncates
+        # the load case number at its decimal point. Parsing from the *end* of the
+        # line instead - last token is always the LC, the one before it always the
+        # ratio, everything else is the clause text - handles any number of extra
+        # tokens without needing to enumerate every clause format.
         pat = re.compile(
             r'^\s{0,8}(\d+)\s+ST\s+\S+\s+\(BRITISH SECTIONS\)\s*\n'
-            r'\s+(PASS|FAIL)\s+(\S+)\s+([\d.]+)\s+(\d+).*\n'
-            r'\s+([\d.]+)\s*([CT]?)\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)',
+            r'\s+(PASS|FAIL)\s+(.+?)\s*\n'
+            r'\s*([\d.]+)\s*([CT]?)\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)',
             re.MULTILINE
         )
         for m in pat.finditer(cc.group(1)):
             member = int(m.group(1))
             status = m.group(2)
-            clause = m.group(3)
-            ratio  = float(m.group(4))
-            lc     = int(m.group(5))
-            axial  = float(m.group(6))
-            atype  = m.group(7) or 'C'
+            tokens = m.group(3).split()
+            if len(tokens) < 2:
+                continue
+            clause = " ".join(tokens[:-2]) if len(tokens) > 2 else tokens[0]
+            try:
+                ratio = float(tokens[-2])
+                lc = int(float(tokens[-1]))
+            except ValueError:
+                continue
+            axial  = float(m.group(4))
+            atype  = m.group(5) or 'C'
 
             res['members'].append({
                 'member': member, 'status': status, 'clause': clause,
