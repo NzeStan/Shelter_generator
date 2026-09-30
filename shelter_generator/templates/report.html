@@ -207,6 +207,11 @@ tr:nth-child(even) td { background: var(--bg-row); }
         <p style="margin-top:8px; font-size:11pt; font-weight:bold; color:var(--navy);">
           SAFE WORKING LOAD (SWL): {{ structural.swl_display }} kN/m&sup2;
         </p>
+        {% if structural.shelter.occupancy.enabled %}
+        <p style="margin-top:2px; font-size:11pt; font-weight:bold; color:var(--navy);">
+          SAFE MAXIMUM OCCUPANCY: {{ structural.shelter.occupancy.safe_max_occupancy }} PERSONS
+        </p>
+        {% endif %}
       </div>
     </div>
 
@@ -378,7 +383,7 @@ tr:nth-child(even) td { background: var(--bg-row); }
     ('load-summary',       'Reaction on Parent Structure (Ties)') if (show_tie_reactions and structural.support_reactions.tie_joints) else ('', ''),
     ('general-note',       'General Note, Material Properties &amp; Modelling Philosophy'),
     ('load-combs',         'Load Combinations'),
-    ('load-cases',         'Load Cases'),
+    ('load-cases',         'Load Cases/Safe Occupancy Calculation'),
     ('wind-calc',          'Wind Load Calculation (EN 1991-1-4:2005)'),
     ('uplift-resistance',  'Uplift Resistance / Counterweight Calculation') if structural.shelter.uplift.enabled else ('', ''),
     ('load-diagrams',      'Load Diagrams'),
@@ -508,6 +513,12 @@ tr:nth-child(even) td { background: var(--bg-row); }
     </td>
   </tr>
 </table>
+{% if structural.shelter.dead_total_kn %}
+<div class="callout">
+  Total Scaffold Weight (DL) = <strong>{{ "%.2f"|format(structural.shelter.dead_total_kn) }} kN</strong><br/>
+  <em style="font-size:7.8pt; color:var(--muted);">Total is read from the STAAD output SUMMATION FORCE-Y result for the dead load case.</em>
+</div>
+{% endif %}
 
 {% set sh = structural.shelter %}
 {% set live = sh.live %}
@@ -620,6 +631,50 @@ tr:nth-child(even) td { background: var(--bg-row); }
   {% if live.seat_line_load_kn_m %}Total Applied Live Load - Seat = <strong>{{ "%.2f"|format(live.seat_total_kn) }} kN</strong><br/>{% endif %}
   Total Applied Live Load = <strong>{{ "%.2f"|format(live.staad_total_kn) }} kN</strong><br/>
   <em style="font-size:7.8pt; color:var(--muted);">Total is read from the STAAD output SUMMATION FORCE-Y result for the live load case. STAAD reports one total for the whole case, so each category is the sum of its member UDL &times; member length, and together they reproduce the STAAD total.</em>
+</div>
+{% endif %}
+
+{% if structural.shelter.occupancy.enabled %}
+{% set occ = structural.shelter.occupancy %}
+<div class="sub-hdr" style="margin-top:10px;">Safe Occupancy Calculation - Main Walking Platform</div>
+<table style="border:none; margin:4px 0;">
+  <tr>
+    <td style="border:none; width:155px; font-weight:bold; color:var(--navy-mid); font-size:8.5pt; vertical-align:top; padding:2px 8px 2px 0;">Design Intensity</td>
+    <td style="border:none; line-height:1.7;">
+      A = {{ "%.1f"|format(occ.plan_length_m) }} x {{ "%.1f"|format(occ.plan_width_m) }} = <strong>{{ "%.1f"|format(occ.area_m2) }} m&sup2;</strong><br/>
+      W = A x w = {{ "%.1f"|format(occ.area_m2) }} x {{ "%.2f"|format(occ.intensity_kn_m2) }} = <strong>{{ "%.2f"|format(occ.total_load_kn) }} kN</strong><br/>
+      <em style="font-size:7.8pt; color:var(--muted);">A = plan area of platform (m&sup2;); W = total characteristic live load (kN); w = design load intensity (kN/m&sup2;).</em>
+    </td>
+  </tr>
+</table>
+
+<table style="border:none; margin:4px 0;">
+  <tr>
+    <td style="border:none; width:155px; font-weight:bold; color:var(--navy-mid); font-size:8.5pt; vertical-align:top; padding:2px 8px 2px 0;">Occupancy</td>
+    <td style="border:none; line-height:1.7;">
+      M = W / g = {{ "%.2f"|format(occ.total_load_kn) }} / 9.81 = <strong>{{ "%.2f"|format(occ.mass_tonnes) }} tonnes</strong><br/>
+      <em style="font-size:7.8pt; color:var(--muted);">M = total permissible mass on platform (tonnes); g = gravitational acceleration = 9.81 m/s&sup2;.</em>
+    </td>
+  </tr>
+</table>
+
+<table style="font-size:8.5pt; margin:4px 0;">
+  <thead>
+    <tr><th style="width:22%;">Mass/person (kg)</th><th style="width:22%;">Load/person (kN)</th><th style="width:34%;">N = W / load</th><th style="width:22%; background:var(--gold); color:var(--navy);">Capacity (persons)</th></tr>
+  </thead>
+  <tbody>
+    {% for row in occ.rows %}
+    <tr>
+      <td style="text-align:center;">{{ row.mass_kg | int }}</td>
+      <td style="text-align:center;">{{ "%.3f"|format(row.load_per_person_kn) }}</td>
+      <td style="text-align:center;">{{ "%.2f"|format(occ.total_load_kn) }} / {{ "%.3f"|format(row.load_per_person_kn) }}</td>
+      <td style="text-align:center; font-weight:bold; background:#BFD8EE;">{{ row.capacity }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+<div class="callout">
+  SAFE MAXIMUM OCCUPANCY = <strong>{{ occ.safe_max_occupancy }} PERSONS</strong>
 </div>
 {% endif %}
 

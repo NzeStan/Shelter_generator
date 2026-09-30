@@ -2,15 +2,15 @@
 # Lines starting with # are ignored. Format: KEY: value
 
 # Document
-DOCUMENT_NO:         PMS-WA-ARCO-084
-SCAFFOLD_DRAWING_NO: PMS-WA-ARCO-084
+DOCUMENT_NO:         PMS-WA-ARCO-086
+SCAFFOLD_DRAWING_NO: PMS-WA-ARCO-086
 REVISION:            1
 
 # Integrated outputs
 # ENGINEERING_DRAWING_FORMAT options: standard, grid, none
 AUTO_RENDER_3D_MODEL:        yes
 AUTO_ENGINEERING_DRAWINGS:   yes
-ENGINEERING_DRAWING_FORMAT:  grid
+ENGINEERING_DRAWING_FORMAT:  standard
 # Show the large 3D Isometric View as the last page of the PDF (default: yes)
 SHOW_3D_ISOMETRIC_PAGE:      no
 
@@ -21,7 +21,7 @@ SCAFFOLD_TYPE:       Shelter
 # Optional descriptor for the shelter's designated use, e.g. Security, Rest, Smoking.
 # Inserted before SCAFFOLD_TYPE in the brief description (e.g. "a Security Shelter
 # Scaffold scaffold required for..."). Leave blank for no qualifier.
-SHELTER_USE: rest
+SHELTER_USE:  meeting room
 # Set to yes only when the shelter is tied to a parent structure.
 SHELTER_TIED:        no
 RISK_LEVEL:          Medium
@@ -33,6 +33,10 @@ ROOF_LIVE_LOAD_KN_M2:      0.4
 SEAT_LIVE_LOAD_KN_M:       0.75
 # Main walking platform live load.
 PLATFORM_LIVE_LOAD_KN_M2:  1.5
+# Nominal occupant mass(es) in kg for the safe occupancy calculation. Comma-separated;
+# the heaviest mass gives the governing (most conservative) safe maximum occupancy.
+#OCCUPANT_MASSES_KG:        80,100
+OCCUPANT_MASSES_KG:         100
 
 CATEGORY_1_ASSURANCE_NOTE: no
 
@@ -55,7 +59,7 @@ TIE_FORCE_FX:
 TIE_FORCE_FZ:
 
 PERMIT_NO:
-ERMT_NO:             PIC/PMS/26/3721
+ERMT_NO:             PIC/PMS/26/3722
 
 # Personnel
 DESIGNED_BY_ID:      PMS/C3-1141
@@ -80,14 +84,14 @@ DOC_LIFE:            3 Years
 
 # Deflection Check - auto-extracted from .out file SLS combination results.
 # Override only if auto-extraction fails:
-MAX_VERT_DISP_MM:0.455
-MAX_VERT_DISP_LC: 7
-MAX_HORIZ_DISP_MM:1.877
-MAX_HORIZ_DISP_LC:8
+MAX_VERT_DISP_MM:0.590
+MAX_VERT_DISP_LC: 11
+MAX_HORIZ_DISP_MM:0.617
+MAX_HORIZ_DISP_LC:10
 # Member ID whose length defines the span L for deflection limits (optional).
 # If blank, the member connected to the critical-displacement node is used automatically.
-MAX_VERT_MEMBER:431
-MAX_HORIZ_MEMBER:2121
+MAX_VERT_MEMBER:861
+MAX_HORIZ_MEMBER:1364
 
 # Connection Stability Check (coupler slipping) - auto-computed from the STAAD member
 # forces output (peak axial force among horizontal ledgers/transoms over the ULS load

@@ -103,6 +103,7 @@ DEFAULTS = {
     'ROOF_LIVE_LOAD_KN_M2': '',
     'SEAT_LIVE_LOAD_KN_M': '',
     'PLATFORM_LIVE_LOAD_KN_M2': '',
+    'OCCUPANT_MASSES_KG': '80,100',
     'UPLIFT_RESISTANCE_ENABLED': 'yes',
     'UPLIFT_TOTAL_WLY_KN': '',
     'UPLIFT_DEAD_LOAD_KN': '',
@@ -965,6 +966,54 @@ def _shelter_uplift_resistance(project, structural):
     }
 
 
+def _shelter_occupancy(project, structural, live):
+    """Safe occupancy for the main walking platform: design intensity x plan area gives
+    the total characteristic live load (independent of any real gap/opening in the STAAD
+    model - this is the platform's designed capacity, not what happens to be applied),
+    then divided by a nominal per-person mass to get a persons-capacity, taking the most
+    conservative (heaviest) mass assumption as the governing safe maximum."""
+    geom = structural.get("geometry", {}) or {}
+    plan_length = max(geom.get("width", 0.0), geom.get("depth", 0.0))
+    plan_width = min(geom.get("width", 0.0), geom.get("depth", 0.0))
+    area_m2 = round(plan_length * plan_width, 3)
+    intensity = live.get("platform_intensity_kn_m2") or 0.0
+    total_load_kn = round(area_m2 * intensity, 3)
+
+    if not (area_m2 and intensity):
+        return {"enabled": False}
+
+    mass_tonnes = round(total_load_kn / 9.81, 3)
+
+    mass_list = []
+    for token in (_project_value(project, "OCCUPANT_MASSES_KG") or "80,100").split(","):
+        token = token.strip()
+        if not token:
+            continue
+        mass = _extract_first_float(token)
+        if mass:
+            mass_list.append(mass)
+    if not mass_list:
+        mass_list = [80.0, 100.0]
+
+    rows = []
+    for mass_kg in mass_list:
+        load_per_person_kn = round(mass_kg / 1000.0 * 9.81, 3)
+        capacity = int(total_load_kn // load_per_person_kn) if load_per_person_kn else 0
+        rows.append({"mass_kg": mass_kg, "load_per_person_kn": load_per_person_kn, "capacity": capacity})
+
+    return {
+        "enabled": True,
+        "plan_length_m": plan_length,
+        "plan_width_m": plan_width,
+        "area_m2": area_m2,
+        "intensity_kn_m2": intensity,
+        "total_load_kn": total_load_kn,
+        "mass_tonnes": mass_tonnes,
+        "rows": rows,
+        "safe_max_occupancy": min((r["capacity"] for r in rows), default=0),
+    }
+
+
 def _build_shelter_data(project, structural, wind):
     wind_pressure = _shelter_wind_pressure(wind)
     live = _shelter_live_workings(project, structural)
@@ -973,6 +1022,8 @@ def _build_shelter_data(project, structural, wind):
     return {
         "tied": _bool_setting(project.get("SHELTER_TIED"), False),
         "live": live,
+        "dead_total_kn": _load_case_total_y(structural, "dead", fallback_case=1),
+        "occupancy": _shelter_occupancy(project, structural, live),
         "wind": wind_workings,
         "uplift": uplift,
     }
